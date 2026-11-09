@@ -2,6 +2,7 @@
   "name": "t3-overlay",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Always-on-top T3 Code overlay for playing games while agents work.",
   "main": "out/main/index.js",
   "type": "module",
