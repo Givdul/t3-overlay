@@ -84,9 +84,9 @@ export function Sidebar({ state }: { state: OverlayState }) {
             title={`${state.working.length} working`}
             onClick={() => window.overlay.setPopover(state.popover === "working" ? null : "working")}
           >
-            <CircleDashed size={30} strokeWidth={1.5} />
-            <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold tabular-nums">
-              {state.working.length > 9 ? "9+" : state.working.length}
+            <CircleDashed size={24} strokeWidth={1.5} />
+            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold tabular-nums">
+              {state.working.length}
             </span>
           </button>
         )}
