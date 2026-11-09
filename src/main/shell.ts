@@ -1,3 +1,4 @@
+import { generatedIcon } from "../shared/projectIcon";
 import type { ProjectIcon, SidebarThread, ThreadState } from "../shared/types";
 
 // Loose views of T3's shell stream (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ShellStreamItem).
@@ -165,12 +166,11 @@ function threadState(thread: ThreadShell): ThreadState {
 
 function projectIcon(project: ProjectShell | undefined, favicon: string | undefined): ProjectIcon {
   const icon = project?.projectIcon;
-  return {
-    url: icon ? null : (favicon ?? null),
-    lucide: icon?.kind === "lucide" ? (icon.name ?? null) : null,
-    color: icon?.color ?? null,
-    letter: icon?.emoji ?? icon?.text ?? (project?.title ?? "?").slice(0, 1).toUpperCase(),
-  };
+  if (icon?.kind === "monogram" && icon.text) return { kind: "monogram", text: icon.text, color: icon.color ?? null };
+  if (icon?.kind === "emoji" && icon.emoji) return { kind: "emoji", emoji: icon.emoji };
+  if (icon?.kind === "lucide" && icon.name) return { kind: "lucide", name: icon.name, color: icon.color ?? null };
+  if (favicon) return { kind: "image", url: favicon };
+  return generatedIcon(project?.title ?? "");
 }
 
 /** Pinned threads first in T3's pin order, then the rest by most recent update. */

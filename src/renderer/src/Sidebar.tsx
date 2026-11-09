@@ -94,12 +94,12 @@ export function Sidebar({ state }: { state: OverlayState }) {
             <button
               key={`${thread.environmentId}:${thread.threadId}`}
               type="button"
-              className={`${button} bg-t3-accent/40 ${sameThread(state.panel, thread) ? "bg-t3-accent ring-1 ring-t3-fg/30" : ""}`}
+              className={`${button} ${sameThread(state.panel, thread) ? "bg-t3-accent ring-1 ring-t3-fg/30" : ""}`}
               title={threadTooltip(thread)}
               onClick={() => window.overlay.open(sameThread(state.panel, thread) ? null : thread)}
               onContextMenu={() => window.overlay.threadMenu(thread)}
             >
-              <ProjectGlyph icon={thread.icon} />
+              <ProjectGlyph icon={thread.icon} size={36} />
               <StateBadge state={thread.state} />
             </button>
           ))}

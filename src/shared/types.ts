@@ -5,14 +5,12 @@ export interface ThreadRef {
   threadId: string;
 }
 
-export interface ProjectIcon {
-  /** Image URL the webview partition can load (same origin as T3), when the project has a favicon. */
-  url: string | null;
-  /** Lucide icon name from T3's project icon picker, when set. */
-  lucide: string | null;
-  color: string | null;
-  letter: string;
-}
+/** A project's icon as T3 shows it: the one set in T3's icon picker, else its favicon, else a generated monogram. */
+export type ProjectIcon =
+  | { kind: "image"; url: string }
+  | { kind: "monogram"; text: string; color: string | null }
+  | { kind: "emoji"; emoji: string }
+  | { kind: "lucide"; name: string; color: string | null };
 
 export interface SidebarThread extends ThreadRef {
   title: string;
