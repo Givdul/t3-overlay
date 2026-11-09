@@ -64,6 +64,8 @@ export interface OverlaySettings {
   textOutline: boolean;
   /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
   compactComposer: boolean;
+  /** The theme picked in the desktop app. Off shows T3's default theme, following the system appearance. */
+  customTheme: boolean;
 }
 
 export const DEFAULT_SETTINGS: OverlaySettings = {
@@ -72,6 +74,7 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   openWhenDone: false,
   textOutline: false,
   compactComposer: true,
+  customTheme: true,
 };
 
 export interface Extent {
@@ -85,7 +88,7 @@ export const SIDEBAR_WIDTH = 52;
 export const PANEL_GAP = 6;
 export const POPOVER_SIZE: Record<Popover, { width: number; height: number }> = {
   working: { width: 260, height: 300 },
-  settings: { width: 250, height: 300 },
+  settings: { width: 250, height: 332 },
 };
 export const PANEL_MIN = { width: 360, height: 300 };
 

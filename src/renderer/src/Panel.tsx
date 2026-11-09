@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { themeApplyScript } from "../../shared/theme";
+import { defaultThemeStorage, themeApplyScript, type ThemeStorage } from "../../shared/theme";
 import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../shared/types";
 
 interface WebviewElement extends HTMLWebViewElement {
@@ -81,9 +81,6 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     const onReady = () => {
       setReady(true);
       element.send("opacity", state.opacity);
-      void window.overlay.getThemeStorage().then((storage) => {
-        if (storage) void element.executeJavaScript(themeApplyScript(storage));
-      });
     };
     const onMessage = (event: Event) => {
       const { channel, args } = event as IpcMessageEvent;
@@ -114,13 +111,18 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     if (ready) webview.current?.send("opacity", state.opacity);
   }, [ready, state.opacity]);
 
-  // Follows the theme picked in the desktop app, live. Needs T3's debugging port.
+  // "Custom theme" follows the theme picked in the desktop app, live. Needs T3's debugging port.
+  const [desktopTheme, setDesktopTheme] = useState<ThemeStorage | null>(null);
   useEffect(() => {
-    if (!ready) return;
-    return window.overlay.onThemeStorage((storage) => {
-      void webview.current?.executeJavaScript(themeApplyScript(storage));
-    });
-  }, [ready]);
+    const stop = window.overlay.onThemeStorage(setDesktopTheme);
+    void window.overlay.getThemeStorage().then(setDesktopTheme);
+    return stop;
+  }, []);
+  const { customTheme } = state.settings;
+  useEffect(() => {
+    const storage = customTheme ? desktopTheme : defaultThemeStorage(desktopTheme);
+    if (ready && storage) void webview.current?.executeJavaScript(themeApplyScript(storage));
+  }, [ready, desktopTheme, customTheme]);
 
   // A thread on a machine this page has no connection to renders as an empty page, so check first.
   const [unreachable, setUnreachable] = useState<SidebarThread | ThreadRef | null>(null);
