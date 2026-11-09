@@ -1,4 +1,4 @@
-import { Check, Loader2, X } from "lucide-react";
+import { Check, CircleDashed, X } from "lucide-react";
 import { DynamicIcon, type IconName } from "lucide-react/dynamic";
 import { PROJECT_COLORS } from "../../shared/projectIcon";
 import type { ProjectIcon, SidebarThread } from "../../shared/types";
@@ -51,7 +51,7 @@ export function StateBadge({ state }: { state: SidebarThread["state"] }) {
     case "working":
       return (
         <span className={`${ring} bg-t3-sidebar`}>
-          <Loader2 size={12} className="animate-spin text-sky-300" />
+          <CircleDashed size={12} className="text-t3-info" />
         </span>
       );
     case "approval":

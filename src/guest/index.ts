@@ -135,7 +135,7 @@ function checkHooks() {
 }
 
 // The overlay's sidebar copies T3's live theme tokens, so it follows whatever theme T3 uses.
-const THEME_TOKENS = ["background", "foreground", "muted-foreground", "border", "sidebar", "accent", "popover"];
+const THEME_TOKENS = ["background", "foreground", "muted-foreground", "border", "sidebar", "accent", "popover", "info-foreground"];
 let lastTheme = "";
 function reportTheme() {
   const computed = getComputedStyle(document.documentElement);

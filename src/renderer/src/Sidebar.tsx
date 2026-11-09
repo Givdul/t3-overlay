@@ -1,4 +1,4 @@
-import { Loader2, Plus } from "lucide-react";
+import { CircleDashed, Plus } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { SIDEBAR_WIDTH, sameThread, type OverlayState } from "../../shared/types";
 import { ProjectGlyph, StateBadge, threadTooltip } from "./ThreadIcon";
@@ -14,17 +14,18 @@ export function Sidebar({ state }: { state: OverlayState }) {
   const moreBelow = state.threads.length > VISIBLE_THREADS && !scrolledToEnd;
   const left = state.side === "left" ? 0 : undefined;
   const right = state.side === "right" ? 0 : undefined;
+  const hasWorking = state.working.length > 0;
+  const hasThreads = state.threads.length > 0;
 
+  // Observes the content and each of its children, so it re-observes only when a child mounts or unmounts.
   useLayoutEffect(() => {
     const element = content.current;
     if (!element) return;
-    const report = () => window.overlay.setExtent({ sidebarHeight: element.scrollHeight + 2 });
-    const observer = new ResizeObserver(report);
+    const observer = new ResizeObserver(() => window.overlay.setExtent({ sidebarHeight: element.scrollHeight + 2 }));
     observer.observe(element);
     for (const child of element.children) observer.observe(child);
-    report();
     return () => observer.disconnect();
-  });
+  }, [hasWorking, hasThreads]);
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,
@@ -64,19 +65,19 @@ export function Sidebar({ state }: { state: OverlayState }) {
           <Plus size={18} />
         </button>
 
-        {state.working.length > 0 && (
+        {hasWorking && (
           <button
             type="button"
-            className={`${button} h-7 gap-1 text-xs text-sky-300 ${state.popover === "working" ? "bg-t3-accent" : ""}`}
+            className={`${button} h-7 gap-1 text-xs text-t3-info! ${state.popover === "working" ? "bg-t3-accent" : ""}`}
             title={`${state.working.length} working`}
             onClick={() => window.overlay.setPopover(state.popover === "working" ? null : "working")}
           >
-            <Loader2 size={12} className="animate-spin" />
+            <CircleDashed size={12} />
             {state.working.length}
           </button>
         )}
 
-        {state.threads.length > 0 && <div className="my-0.5 h-px w-6 shrink-0 bg-t3-border" />}
+        {hasThreads && <div className="my-0.5 h-px w-6 shrink-0 bg-t3-border" />}
 
         {/* Five icons fit; the rest scroll. The padding keeps state badges from being clipped. */}
         <div

@@ -75,8 +75,11 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   customTheme: true,
 };
 
+/** Content-sized heights the renderer measures. Main sizes and shapes the window by them. */
 export interface Extent {
   sidebarHeight: number;
+  /** The open popover's height. Null until it reports, then the shape covers its largest size. */
+  popoverHeight: number | null;
 }
 
 /** Small surfaces that open beside the sidebar: the working-thread list and the logo's settings. */
@@ -89,6 +92,16 @@ export const POPOVER_SIZE: Record<Popover, { width: number; height: number }> = 
   settings: { width: 250, height: 332 },
 };
 export const PANEL_MIN = { width: 360, height: 300 };
+
+/** Left edge of the panel or popover slot in the window. The renderer places surfaces by it and main shapes the window. */
+export function slotLeft(side: OverlayState["side"]): number {
+  return side === "left" ? SIDEBAR_WIDTH + PANEL_GAP : 0;
+}
+
+/** Over an open panel, the popover sits on the edge next to the sidebar. */
+export function popoverLeft(state: Pick<OverlayState, "panel" | "panelSize" | "side">, popover: Popover): number {
+  return state.panel && state.side === "right" ? state.panelSize.width - POPOVER_SIZE[popover].width : slotLeft(state.side);
+}
 
 export function sameThread(a: PanelTarget | null, b: ThreadRef): boolean {
   return typeof a === "object" && a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;

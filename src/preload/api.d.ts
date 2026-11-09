@@ -5,7 +5,7 @@ export interface OverlayApi {
   init(): Promise<{ state: OverlayState }>;
   onState(listener: (state: OverlayState) => void): () => void;
   onFocusComposer(listener: () => void): () => void;
-  setExtent(extent: Extent): void;
+  setExtent(extent: Partial<Extent>): void;
   open(target: PanelTarget | null): void;
   /** T3 moved to this thread on its own (a draft became a thread). Ignored while the panel is closed. */
   follow(thread: ThreadRef): void;
@@ -19,7 +19,6 @@ export interface OverlayApi {
   setSettings(patch: Partial<OverlaySettings>): void;
   dragStart(kind: "move" | "resize"): void;
   dragEnd(): void;
-  setIgnoreMouse(ignore: boolean): void;
   hover(): void;
   escape(): void;
   sent(): void;

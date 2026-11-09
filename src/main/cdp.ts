@@ -186,7 +186,8 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     if (!stopped) options.onClose();
   });
 
-  await send("Network.enable");
+  // The overlay reads only socket frames, so T3's renderer keeps no response bodies for it.
+  await send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
   await send("DOMStorage.enable");
   await seed();
   await readTheme();

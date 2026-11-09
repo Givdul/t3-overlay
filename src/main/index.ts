@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type Rectangle } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
   POPOVER_SIZE,
   SIDEBAR_WIDTH,
+  popoverLeft,
   sameThread,
+  slotLeft,
   type Extent,
   type OverlaySettings,
   type OverlayState,
@@ -22,11 +24,12 @@ import { ensureSession, readDesktopClientSettings, readServer, T3_PARTITION, typ
 import { startThreadFeed, type ThreadFeed } from "./threads";
 import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
+import { setReducedMotion, trackMotion } from "./motion";
 
 const persisted = loadPersisted();
 let config = loadConfig();
 let win: BrowserWindow | null = null;
-let extent: Extent = { sidebarHeight: 160 };
+let extent: Extent = { sidebarHeight: 160, popoverHeight: null };
 let clientSettings: string | null = null;
 /** The desktop app's theme keys, read over the debugging port. Null without it. */
 let themeStorage: ThemeStorage | null = null;
@@ -73,18 +76,48 @@ function anchor(): { x: number; y: number } {
   return { x: area.x, y: Math.round(area.y + area.height / 2 - extent.sidebarHeight / 2) };
 }
 
-function layout() {
-  if (!win) return;
+/** Sizes the window around the sidebar and its open surface. Returns whether the sidebar moved inside it. */
+function layout(): boolean {
+  if (!win) return false;
   const a = anchor();
-  const area = screen.getDisplayNearestPoint(a).workArea;
-  state.side = a.x + SIDEBAR_WIDTH / 2 < area.x + area.width / 2 ? "left" : "right";
+  const display = screen.getDisplayNearestPoint(a);
+  const area = display.workArea;
+  const side = a.x + SIDEBAR_WIDTH / 2 < area.x + area.width / 2 ? "left" : "right";
   const slot = state.panel ? state.panelSize : state.popover ? POPOVER_SIZE[state.popover] : null;
   const slotSpan = slot ? PANEL_GAP + slot.width : 0;
   const height = Math.min(area.height, Math.max(extent.sidebarHeight, slot?.height ?? 0));
-  const x = state.side === "left" ? a.x : a.x - slotSpan;
+  const x = side === "left" ? a.x : a.x - slotSpan;
   const y = Math.max(area.y, Math.min(a.y, area.y + area.height - height));
+  const moved = side !== state.side || a.y - y !== state.sidebarOffsetY;
+  state.side = side;
   state.sidebarOffsetY = a.y - y;
   win.setBounds({ x: Math.round(x), y: Math.round(y), width: SIDEBAR_WIDTH + slotSpan, height: Math.round(height) });
+  shape(SIDEBAR_WIDTH + slotSpan, display.scaleFactor);
+  return moved;
+}
+
+// The window's shape is the surfaces it draws, placed as App.tsx places them. Clicks outside them reach the
+// game through Windows' own hit testing. setIgnoreMouseEvents' forward mode would instead install a low-level
+// mouse hook, which runs on this thread for every mouse move on the system, game input included.
+let lastShape = "";
+
+/** Electron turns the shape into pixels at the window's current scale, so a new scale sets it again. */
+function shape(width: number, scaleFactor: number) {
+  // macOS has no window shapes. There the transparent gaps take clicks.
+  if (!win || process.platform === "darwin") return;
+  const rects: Rectangle[] = [
+    { x: state.side === "left" ? 0 : width - SIDEBAR_WIDTH, y: state.sidebarOffsetY, width: SIDEBAR_WIDTH, height: extent.sidebarHeight },
+  ];
+  if (state.panel) rects.push({ x: slotLeft(state.side), y: 0, ...state.panelSize });
+  if (state.popover) {
+    const size = POPOVER_SIZE[state.popover];
+    const height = extent.popoverHeight ?? size.height;
+    rects.push({ x: popoverLeft(state, state.popover), y: state.sidebarOffsetY, width: size.width, height });
+  }
+  const key = JSON.stringify([scaleFactor, rects]);
+  if (key === lastShape) return;
+  lastShape = key;
+  win.setShape(rects);
 }
 
 function update(patch: Partial<OverlayState>) {
@@ -183,6 +216,8 @@ function createWindow() {
     },
   });
   win.setAlwaysOnTop(true, "screen-saver");
+  win.on("focus", () => setReducedMotion(false));
+  win.on("blur", () => setReducedMotion(true));
   win.on("ready-to-show", () => win?.showInactive());
   win.on("show", broadcast);
   win.on("hide", broadcast);
@@ -202,6 +237,7 @@ app.on("web-contents-created", (_event, contents) => {
     if (state.origin === null || !params.src?.startsWith(state.origin)) event.preventDefault();
   });
   if (contents.getType() === "webview") {
+    trackMotion(contents);
     contents.setWindowOpenHandler(({ url }) => {
       // T3 Connect sign-in may pop up auth pages (T3, Clerk, or the identity provider while connecting);
       // they must share the webview's session. Other links open in the default browser.
@@ -235,9 +271,12 @@ function startDrag(kind: "move" | "resize") {
   const anchor0 = anchor();
   const size0 = { ...state.panelSize };
   const side = state.side;
+  let last = cursor0;
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = setInterval(() => {
     const cursor = screen.getCursorScreenPoint();
+    if (cursor.x === last.x && cursor.y === last.y) return;
+    last = cursor;
     const dx = cursor.x - cursor0.x;
     const dy = cursor.y - cursor0.y;
     if (kind === "move") {
@@ -254,8 +293,8 @@ function startDrag(kind: "move" | "resize") {
         height: Math.max(PANEL_MIN.height, Math.min(size0.height + dy, area.height)),
       };
     }
-    layout();
-    broadcast();
+    // A move re-renders only when the sidebar shifts inside the window, such as at a screen edge.
+    if (layout() || kind === "resize") broadcast();
   }, 16);
 }
 
@@ -301,9 +340,9 @@ function registerHotkeys() {
 
 ipcMain.handle("overlay:init", () => ({ state }));
 ipcMain.handle("overlay:get-theme-storage", () => themeStorage);
-ipcMain.on("overlay:extent", (_event, next: Extent) => {
-  if (next.sidebarHeight === extent.sidebarHeight) return;
-  extent = next;
+ipcMain.on("overlay:extent", (_event, next: Partial<Extent>) => {
+  if (Object.entries(next).every(([key, value]) => extent[key as keyof Extent] === value)) return;
+  extent = { ...extent, ...next };
   layout();
   broadcast();
 });
@@ -311,7 +350,11 @@ ipcMain.on("overlay:open", (_event, target: PanelTarget | null) => openPanel(tar
 ipcMain.on("overlay:follow", (_event, thread: ThreadRef) => {
   if (state.panel !== null && !sameThread(state.panel, thread)) openPanel(thread);
 });
-ipcMain.on("overlay:popover", (_event, popover: Popover | null) => update({ popover }));
+ipcMain.on("overlay:popover", (_event, popover: Popover | null) => {
+  // Until the new popover reports its height, the window's shape covers its largest size.
+  extent = { ...extent, popoverHeight: null };
+  update({ popover });
+});
 ipcMain.on("overlay:thread-menu", (_event, thread: ThreadRef) => {
   Menu.buildFromTemplate([
     { label: "Settle", click: () => win?.webContents.send("overlay:settle", thread) },
@@ -327,7 +370,6 @@ ipcMain.on("overlay:lock", (_event, locked: boolean) => {
 });
 ipcMain.on("overlay:drag-start", (_event, kind: "move" | "resize") => startDrag(kind));
 ipcMain.on("overlay:drag-end", endDrag);
-ipcMain.on("overlay:ignore-mouse", (_event, ignore: boolean) => win?.setIgnoreMouseEvents(ignore, { forward: true }));
 ipcMain.on("overlay:hover", () => {
   if (win && !win.isFocused()) rememberForeground(win);
 });

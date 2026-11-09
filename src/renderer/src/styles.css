@@ -9,6 +9,7 @@
   --t3-sidebar: oklch(0.18 0 0);
   --t3-accent: oklch(1 0 0 / 8%);
   --t3-popover: oklch(0.23 0 0);
+  --t3-info-foreground: oklch(0.707 0.165 254.624);
 }
 
 @theme inline {
@@ -19,6 +20,7 @@
   --color-t3-sidebar: var(--t3-sidebar);
   --color-t3-accent: var(--t3-accent);
   --color-t3-popover: var(--t3-popover);
+  --color-t3-info: var(--t3-info-foreground);
   --font-sans: -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif;
 }
 

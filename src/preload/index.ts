@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ThemeStorage } from "../shared/theme";
-import type { Extent, OverlayState, PanelTarget, ThreadRef } from "../shared/types";
+import type { OverlayState, PanelTarget, ThreadRef } from "../shared/types";
 import type { OverlayApi } from "./api";
 
 const api: OverlayApi = {
@@ -14,7 +14,7 @@ const api: OverlayApi = {
     ipcRenderer.on("overlay:focus-composer", listener);
     return () => ipcRenderer.off("overlay:focus-composer", listener);
   },
-  setExtent: (extent: Extent) => ipcRenderer.send("overlay:extent", extent),
+  setExtent: (extent) => ipcRenderer.send("overlay:extent", extent),
   open: (target: PanelTarget | null) => ipcRenderer.send("overlay:open", target),
   follow: (thread: ThreadRef) => ipcRenderer.send("overlay:follow", thread),
   setPopover: (popover) => ipcRenderer.send("overlay:popover", popover),
@@ -35,7 +35,6 @@ const api: OverlayApi = {
   setSettings: (patch) => ipcRenderer.send("overlay:settings", patch),
   dragStart: (kind) => ipcRenderer.send("overlay:drag-start", kind),
   dragEnd: () => ipcRenderer.send("overlay:drag-end"),
-  setIgnoreMouse: (ignore: boolean) => ipcRenderer.send("overlay:ignore-mouse", ignore),
   hover: () => ipcRenderer.send("overlay:hover"),
   escape: () => ipcRenderer.send("overlay:escape"),
   sent: () => ipcRenderer.send("overlay:sent"),

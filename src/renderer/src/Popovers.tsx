@@ -1,12 +1,33 @@
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import type { OverlayState } from "../../shared/types";
 import { ProjectGlyph } from "./ThreadIcon";
 
-const surface = "overflow-hidden rounded-xl border border-t3-border bg-t3-popover shadow-xl shadow-black/40";
+/** A popover's card. It reports its height, so the window's shape ends where the card does. */
+function Surface({ className, style, children }: { className: string; style: CSSProperties; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() =>
+      window.overlay.setExtent({ popoverHeight: Math.ceil(element.getBoundingClientRect().height) }),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div
+      ref={ref}
+      className={`overflow-hidden rounded-xl border border-t3-border bg-t3-popover shadow-xl shadow-black/40 ${className}`}
+      style={style}
+    >
+      {children}
+    </div>
+  );
+}
 
 export function WorkingPopover({ state, style }: { state: OverlayState; style: CSSProperties }) {
   return (
-    <div className={`${surface} flex flex-col`} style={style}>
+    <Surface className="flex flex-col" style={style}>
       <div className="px-3 pt-2.5 pb-1 text-[11px] font-medium text-t3-muted">Working</div>
       <div className="flex min-h-0 flex-col overflow-y-auto p-1">
         {state.working.map((thread) => (
@@ -28,7 +49,7 @@ export function WorkingPopover({ state, style }: { state: OverlayState; style: C
           </button>
         ))}
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -52,7 +73,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 export function SettingsPopover({ state, style }: { state: OverlayState; style: CSSProperties }) {
   const { settings } = state;
   return (
-    <div className={`${surface} flex flex-col gap-3 p-3`} style={style}>
+    <Surface className="flex flex-col gap-3 p-3" style={style}>
       <Toggle label="Lock position" checked={state.locked} onChange={(locked) => window.overlay.setLocked(locked)} />
       <Toggle
         label="Title in composer"
@@ -99,6 +120,6 @@ export function SettingsPopover({ state, style }: { state: OverlayState; style: 
           onChange={(event) => window.overlay.setOpacity(Number(event.target.value))}
         />
       </label>
-    </div>
+    </Surface>
   );
 }
