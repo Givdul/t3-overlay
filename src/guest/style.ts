@@ -220,4 +220,14 @@ html[data-overlay-route="thread"] [data-workspace-area="conversation"] > div:has
 html[data-overlay-route="thread"] .messages-timeline-scroll div[aria-hidden="true"][style*="height"]:empty {
   height: 12px !important;
 }
+
+/* Beside the folded write button, the pad and T3's end spacer after it (also an empty aria-hidden div)
+   only add air, so the last message ends at the history's bottom. */
+html[data-overlay-route="thread"][data-overlay-composer-folded] .messages-timeline-scroll div[aria-hidden="true"][style*="height"]:empty,
+html[data-overlay-route="thread"][data-overlay-composer-folded]
+  .messages-timeline-scroll
+  div[aria-hidden="true"][style*="height"]:empty
+  + div[aria-hidden="true"]:empty {
+  height: 0 !important;
+}
 `;
