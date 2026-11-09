@@ -208,6 +208,11 @@ html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-compo
     center / 14px no-repeat;
 }
 
+/* The history's scrollbar ends where the chat window's corners start rounding, so it stays inside the border. */
+html[data-overlay-route="thread"] .messages-timeline-scroll::-webkit-scrollbar-track {
+  margin-block: var(--overlay-radius);
+}
+
 /* T3 lifts "Scroll to end" above its floating composer with an inline bottom offset. Here the
    composer sits below the history, so the button goes to the bottom of the history instead. */
 html[data-overlay-route="thread"] [data-workspace-area="conversation"] > div:has(> [data-scroll-to-end]) {
