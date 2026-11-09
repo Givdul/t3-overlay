@@ -35,7 +35,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   return (
     <div
-      className="absolute flex flex-col rounded-2xl border border-t3-border bg-t3-sidebar shadow-lg shadow-black/40"
+      className="absolute flex flex-col rounded-2xl border border-t3-border bg-t3-sidebar"
       style={{ top: state.sidebarOffsetY, left, right, width: SIDEBAR_WIDTH, maxHeight: `calc(100% - ${state.sidebarOffsetY}px)` }}
     >
       <div ref={content} className="flex min-h-0 flex-col items-center gap-1.5 overflow-y-auto px-2 py-2 [scrollbar-width:none]">
