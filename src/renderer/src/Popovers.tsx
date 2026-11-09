@@ -34,9 +34,17 @@ export function WorkingPopover({ state, style }: { state: OverlayState; style: C
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <label className="flex items-center justify-between gap-3 text-[13px]">
+    <label className="flex cursor-pointer items-center justify-between gap-3 text-[13px]">
       {label}
-      <input type="checkbox" className="accent-sky-400" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        className="group inline-flex h-[18px] w-8 shrink-0 items-center rounded-full bg-white/15 p-0.5 transition-colors aria-checked:bg-sky-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        onClick={() => onChange(!checked)}
+      >
+        <span className="size-3.5 rounded-full bg-white shadow-sm transition-transform group-aria-checked:translate-x-3.5" />
+      </button>
     </label>
   );
 }
