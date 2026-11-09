@@ -30,7 +30,12 @@ interface ProjectShell {
 }
 
 type ShellItem =
-  | { kind: "snapshot"; snapshot: { threads: ThreadShell[]; projects: ProjectShell[] } }
+  | {
+      kind: "snapshot";
+      snapshot: { threads: ThreadShell[]; projects: ProjectShell[] };
+      /** Set on a refresh of project repository identities only. Its threads and projects are not the full list. */
+      resolvedRepositoryIdentityRoots?: string[];
+    }
   | { kind: "thread.updated"; location: "active" | "archive"; thread: ThreadShell }
   | { kind: "thread.removed"; threadId: string }
   | { kind: "project.updated"; project: ProjectShell }
@@ -85,7 +90,9 @@ export class ShellModel {
     const item = raw as ShellItem;
     switch (item.kind) {
       case "snapshot": {
-        const { snapshot } = item as Extract<ShellItem, { kind: "snapshot" }>;
+        const { snapshot, resolvedRepositoryIdentityRoots } = item as Extract<ShellItem, { kind: "snapshot" }>;
+        // The sidebar reads no repository identities, so a refresh of them changes nothing here.
+        if (resolvedRepositoryIdentityRoots !== undefined) return false;
         this.threads = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
         this.projects = new Map(snapshot.projects.map((project) => [project.id, project]));
         this.hasSnapshot = true;
