@@ -99,7 +99,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
               onClick={() => window.overlay.open(sameThread(state.panel, thread) ? null : thread)}
               onContextMenu={() => window.overlay.threadMenu(thread)}
             >
-              <ProjectGlyph icon={thread.icon} size={36} />
+              <ProjectGlyph icon={thread.icon} size={26} />
               <StateBadge state={thread.state} />
             </button>
           ))}
