@@ -85,7 +85,8 @@ export function Sidebar({ state }: { state: OverlayState }) {
             onClick={() => window.overlay.setPopover(state.popover === "working" ? null : "working")}
           >
             <CircleDashed size={24} strokeWidth={1.5} />
-            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold tabular-nums">
+            {/* pb-0.5 lifts the 9px-tall digits 1px, so they sit 0.5px above the ring's center instead of 0.5px below. */}
+            <span className="absolute inset-0 flex items-center justify-center pb-0.5 text-xs font-bold tabular-nums">
               {state.working.length}
             </span>
           </button>
