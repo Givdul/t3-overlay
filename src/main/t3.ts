@@ -1,0 +1,91 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { app, safeStorage, session } from "electron";
+
+export const T3_PARTITION = "persist:t3";
+
+const T3_HOME = join(homedir(), ".t3");
+
+export interface T3Server {
+  origin: string;
+  port: number;
+  serverVersion: string;
+}
+
+export async function readServer(): Promise<T3Server | null> {
+  try {
+    const raw = JSON.parse(await readFile(join(T3_HOME, "userdata", "server-runtime.json"), "utf8"));
+    const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
+    if (!response.ok) return null;
+    return { origin: raw.origin, port: raw.port, serverVersion: raw.serverVersion };
+  } catch {
+    return null;
+  }
+}
+
+const tokenPath = () => join(app.getPath("userData"), "t3-session.bin");
+
+async function loadToken(): Promise<string | null> {
+  if (!existsSync(tokenPath())) return null;
+  return (await safeStorage.decryptStringAsync(await readFile(tokenPath()))).result;
+}
+
+function mintToken(): Promise<string> {
+  const cli = join(T3_HOME, "bin", process.platform === "win32" ? "t3.cmd" : "t3");
+  const args = ["auth", "session", "issue", "--ttl", "90d", "--label", "t3-overlay", "--token-only"];
+  return new Promise((resolve, reject) => {
+    // .cmd shims run through cmd.exe. The arguments are fixed, so nothing is interpolated.
+    const [file, fileArgs] =
+      process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", `"${cli}" ${args.join(" ")}`]] : [cli, args];
+    execFile(file, fileArgs, { timeout: 60_000, windowsHide: true, windowsVerbatimArguments: true }, (error, stdout) => {
+      const token = stdout.trim().split(/\r?\n/).pop() ?? "";
+      if (error || token === "") reject(error ?? new Error("t3 auth session issue printed no token"));
+      else resolve(token);
+    });
+  });
+}
+
+interface AuthSession {
+  authenticated: boolean;
+  auth: { sessionCookieName: string };
+}
+
+async function authSession(server: T3Server, token: string): Promise<AuthSession> {
+  const response = await fetch(`${server.origin}/api/auth/session`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return (await response.json()) as AuthSession;
+}
+
+/** Returns a working bearer token and installs it as the session cookie of the T3 webview partition. */
+export async function ensureSession(server: T3Server, forceMint = false): Promise<string> {
+  let token = forceMint ? null : await loadToken();
+  let current = token === null ? null : await authSession(server, token);
+  if (token === null || current === null || !current.authenticated) {
+    token = await mintToken();
+    current = await authSession(server, token);
+    if (!current.authenticated) throw new Error("T3 rejected a freshly minted session token");
+    await writeFile(tokenPath(), await safeStorage.encryptStringAsync(token));
+  }
+  await session.fromPartition(T3_PARTITION).cookies.set({
+    url: server.origin,
+    name: current.auth.sessionCookieName,
+    value: token,
+    httpOnly: true,
+    sameSite: "lax",
+    expirationDate: Date.now() / 1000 + 90 * 24 * 3600,
+  });
+  return token;
+}
+
+/** Copies the desktop app's client settings (send shortcut, follow-up behavior, theme) into the webview. */
+export async function readDesktopClientSettings(): Promise<string | null> {
+  try {
+    return await readFile(join(T3_HOME, "userdata", "client-settings.json"), "utf8");
+  } catch {
+    return null;
+  }
+}
