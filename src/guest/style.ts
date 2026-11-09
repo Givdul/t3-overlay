@@ -18,6 +18,12 @@ export const GUEST_CSS = `
   --overlay-bg: color-mix(in srgb, var(--background) calc(var(--overlay-opacity) * 100%), transparent);
   --overlay-border: color-mix(in srgb, var(--border) calc(var(--overlay-opacity) * 100%), transparent);
   --overlay-radius: 12px;
+  /* How far the open composer overlaps the history's bottom: T3's composer corner radius (rounded-2xl). */
+  --overlay-composer-overlap: 0px;
+}
+
+html[data-overlay-route="thread"]:not([data-overlay-composer-folded]) {
+  --overlay-composer-overlap: 16px;
 }
 
 [data-app-sidebar],
@@ -83,6 +89,13 @@ html[data-overlay-route="thread"] [data-workspace-area="conversation"] {
   border-radius: 0 0 var(--overlay-radius) var(--overlay-radius);
 }
 
+/* The open composer covers the history's bottom edge, and the history fills in behind its rounded top corners. */
+html[data-overlay-route="thread"]:not([data-overlay-composer-folded]) [data-workspace-area="conversation"] {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 /* Environment and permission (T3's composer context strip) sit at the top inside the composer card.
    T3 floats the strip outside its card and hides the shell's card surface while it shows. The overlay
    turns that surface back on so one card holds title, strip and editor. */
@@ -129,7 +142,8 @@ html[data-overlay-route="thread"][data-overlay-title="composer"]:not([data-overl
 
 html[data-overlay-route="thread"][data-overlay-title="composer"]:not([data-overlay-composer-folded]) [data-workspace-area="conversation"] {
   border-top: 1px solid var(--overlay-border);
-  border-radius: var(--overlay-radius);
+  border-top-left-radius: var(--overlay-radius);
+  border-top-right-radius: var(--overlay-radius);
 }
 
 html[data-overlay-route="thread"][data-overlay-title="composer"] [data-slot="composer-shell"]::after {
@@ -164,7 +178,8 @@ html[data-overlay-route="thread"] [data-chat-composer-overlay] {
   position: static !important;
   order: 3;
   flex: none;
-  margin-top: 6px;
+  margin-top: calc(-1 * var(--overlay-composer-overlap));
+  padding-top: 0 !important;
 }
 
 /* "Compact composer" (folded in index.ts): the composer becomes a round write button under the chat,
@@ -175,6 +190,7 @@ html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-compo
   align-self: flex-end;
   width: 32px;
   height: 32px;
+  margin-top: 6px;
   padding: 0 !important;
   border-radius: 9999px;
   cursor: pointer;
@@ -208,22 +224,23 @@ html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-compo
     center / 14px no-repeat;
 }
 
-/* The history's scrollbar ends where the chat window's corners start rounding, so it stays inside the border. */
+/* The history's scrollbar ends where the chat window's corners start rounding, so it stays inside the border.
+   Above the open composer it ends at the composer's top instead. */
 html[data-overlay-route="thread"] .messages-timeline-scroll::-webkit-scrollbar-track {
-  margin-block: var(--overlay-radius);
+  margin-block: var(--overlay-radius) max(var(--overlay-radius), var(--overlay-composer-overlap));
 }
 
 /* T3 lifts "Scroll to end" above its floating composer with an inline bottom offset. Here the
    composer sits below the history, so the button goes to the bottom of the history instead. */
 html[data-overlay-route="thread"] [data-workspace-area="conversation"] > div:has(> [data-scroll-to-end]) {
-  bottom: 12px !important;
+  bottom: calc(12px + var(--overlay-composer-overlap)) !important;
 }
 
 /* T3 pads the timeline end by the composer's height because its composer floats over the history.
-   Here the composer sits below the history, so the pad shrinks. MessagesTimeline.tsx renders it as
-   <div aria-hidden style={{ height: composerInset }} /> with no data hook. */
+   Here the composer only overlaps the history's bottom, so the pad shrinks to that. MessagesTimeline.tsx
+   renders it as <div aria-hidden style={{ height: composerInset }} /> with no data hook. */
 html[data-overlay-route="thread"] .messages-timeline-scroll div[aria-hidden="true"][style*="height"]:empty {
-  height: 12px !important;
+  height: calc(12px + var(--overlay-composer-overlap)) !important;
 }
 
 /* Beside the folded write button, the pad and T3's end spacer after it (also an empty aria-hidden div)
