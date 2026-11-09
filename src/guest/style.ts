@@ -183,16 +183,16 @@ html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-compo
   box-shadow:
     inset 0 1px #ffffff29,
     0 1px 2px 0 color-mix(in oklab, var(--message-action) 24%, transparent);
-  transition: background-color 150ms, scale 150ms;
+  transition: background-color 150ms;
 }
 
 html[data-overlay-route="thread"][data-overlay-side="left"][data-overlay-composer-folded] [data-chat-composer-overlay] {
   align-self: flex-start;
 }
 
+/* No hover scale like T3's send button: growing past the chat column's bottom gives it a scrollbar. */
 html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay]:hover {
   background: var(--message-action-hover, var(--message-action));
-  scale: 1.05;
 }
 
 html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay] > * {
