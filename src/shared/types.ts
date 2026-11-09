@@ -62,6 +62,8 @@ export interface OverlaySettings {
   openWhenDone: boolean;
   /** Dark outline on chat text, like WoW's chat, for reading over bright scenery. */
   textOutline: boolean;
+  /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
+  compactComposer: boolean;
 }
 
 export const DEFAULT_SETTINGS: OverlaySettings = {
@@ -69,6 +71,7 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   closeOnSend: false,
   openWhenDone: false,
   textOutline: false,
+  compactComposer: true,
 };
 
 export interface Extent {
@@ -82,7 +85,7 @@ export const SIDEBAR_WIDTH = 52;
 export const PANEL_GAP = 6;
 export const POPOVER_SIZE: Record<Popover, { width: number; height: number }> = {
   working: { width: 260, height: 300 },
-  settings: { width: 250, height: 268 },
+  settings: { width: 250, height: 300 },
 };
 export const PANEL_MIN = { width: 360, height: 300 };
 

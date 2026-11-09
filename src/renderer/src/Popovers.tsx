@@ -65,6 +65,11 @@ export function SettingsPopover({ state, style }: { state: OverlayState; style: 
         onChange={(textOutline) => window.overlay.setSettings({ textOutline })}
       />
       <Toggle
+        label="Compact composer"
+        checked={settings.compactComposer}
+        onChange={(compactComposer) => window.overlay.setSettings({ compactComposer })}
+      />
+      <Toggle
         label="Close after sending"
         checked={settings.closeOnSend}
         onChange={(closeOnSend) => window.overlay.setSettings({ closeOnSend })}

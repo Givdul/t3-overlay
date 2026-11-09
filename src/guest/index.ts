@@ -19,18 +19,69 @@ window.addEventListener("DOMContentLoaded", () => document.head.append(style));
 ipcRenderer.on("opacity", (_event, opacity: number) => {
   document.documentElement.style.setProperty("--overlay-opacity", String(opacity));
 });
-ipcRenderer.on("chrome", (_event, chrome: { title: string; titleInComposer: boolean; textOutline: boolean }) => {
+interface Chrome {
+  title: string;
+  titleInComposer: boolean;
+  textOutline: boolean;
+  compactComposer: boolean;
+  /** The thread waits on an approval or an answer. */
+  needsReply: boolean;
+  /** The screen edge the overlay docks to. The folded composer's button sits on this side. */
+  side: "left" | "right";
+}
+
+let chrome: Chrome | null = null;
+
+ipcRenderer.on("chrome", (_event, next: Chrome) => {
+  chrome = next;
   const root = document.documentElement;
   // JSON string syntax is valid CSS string syntax for the characters a thread title holds.
-  root.style.setProperty("--overlay-title", JSON.stringify(chrome.title));
-  root.dataset.overlayTitle = chrome.titleInComposer ? "composer" : "chat";
-  root.toggleAttribute("data-overlay-outline", chrome.textOutline);
+  root.style.setProperty("--overlay-title", JSON.stringify(next.title));
+  root.dataset.overlayTitle = next.titleInComposer ? "composer" : "chat";
+  root.toggleAttribute("data-overlay-outline", next.textOutline);
+  root.dataset.overlaySide = next.side;
+  foldComposer();
 });
 
 const OPEN_POPOVER = '[role="listbox"], [role="menu"], [role="dialog"]';
+const COMPOSER_FORM = '[data-chat-composer-form="true"]';
 const composerText = () =>
-  document.querySelector('[data-chat-composer-form="true"] [contenteditable="true"], [data-chat-composer-form="true"] textarea')
-    ?.textContent?.trim() ?? "";
+  document.querySelector(`${COMPOSER_FORM} [contenteditable="true"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
+
+// Compact composer: an empty composer without focus folds into a write button below the history.
+// Focus moving in only unfolds. Focus leaving, a route change, or new settings re-check the fold.
+const setFolded = (folded: boolean) => document.documentElement.toggleAttribute("data-overlay-composer-folded", folded);
+const composerFocused = () =>
+  document.hasFocus() && document.querySelector("[data-chat-composer-overlay]")?.contains(document.activeElement) === true;
+
+function foldComposer() {
+  const idle = !composerFocused() && composerText() === "" && document.querySelector(OPEN_POPOVER) === null;
+  setFolded(chrome !== null && chrome.compactComposer && !chrome.needsReply && idle);
+}
+
+/** Unfolds the composer and focuses T3's editor. A resting composer shows a prompt button that mounts the editor. */
+function openComposer() {
+  setFolded(false);
+  const prompt = document.querySelector<HTMLElement>(`${COMPOSER_FORM} [data-chat-composer-transition-prompt="true"]`);
+  if (prompt) prompt.click();
+  else document.querySelector<HTMLElement>(`${COMPOSER_FORM} [contenteditable="true"]`)?.focus();
+}
+
+ipcRenderer.on("focus-composer", openComposer);
+window.addEventListener("focusout", () => setTimeout(foldComposer));
+window.addEventListener("blur", foldComposer);
+window.addEventListener("focusin", () => {
+  if (composerFocused()) setFolded(false);
+});
+// Only the folded button hits the composer region itself: T3 makes it click-through, and the button's
+// mousedown has already unfolded it through focusin by the time the click arrives.
+window.addEventListener(
+  "click",
+  (event) => {
+    if (event.target instanceof Element && event.target.matches("[data-chat-composer-overlay]")) openComposer();
+  },
+  true,
+);
 
 window.addEventListener(
   "keydown",
@@ -47,7 +98,7 @@ window.addEventListener("submit", (event) => {
 }, true);
 
 function inComposer(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest('[data-chat-composer-form="true"]') !== null;
+  return target instanceof Element && target.closest(COMPOSER_FORM) !== null;
 }
 
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
@@ -72,6 +123,8 @@ const navigation = (window as unknown as { navigation?: EventTarget }).navigatio
 navigation?.addEventListener("currententrychange", () => {
   markRoute();
   ipcRenderer.sendToHost("route", location.pathname);
+  // The next thread's draft text renders a moment after the route changes.
+  setTimeout(foldComposer, 300);
   setTimeout(checkHooks, 1500);
 });
 

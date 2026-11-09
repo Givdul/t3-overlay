@@ -5,11 +5,7 @@ import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../
 interface WebviewElement extends HTMLWebViewElement {
   executeJavaScript(code: string): Promise<unknown>;
   send(channel: string, ...args: unknown[]): void;
-  sendInputEvent(
-    event:
-      | { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }
-      | { type: "mouseDown" | "mouseUp"; x: number; y: number; button: "left"; clickCount: number },
-  ): void;
+  sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
 }
 
 interface IpcMessageEvent extends Event {
@@ -142,20 +138,12 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     })();
   }, [ready, state.panel]);
 
+  // The guest unfolds the composer and focuses T3's editor.
   useEffect(
     () =>
-      window.overlay.onFocusComposer(async () => {
-        const element = webview.current;
-        if (!element) return;
-        element.focus();
-        // T3 mounts its editor on the first click into the composer, so focus() alone is not enough.
-        const form = (await element.executeJavaScript(
-          `(() => { const r = document.querySelector('[data-chat-composer-form="true"]')?.getBoundingClientRect(); return r ? { x: r.x, y: r.y } : null; })()`,
-        )) as { x: number; y: number } | null;
-        if (!form) return;
-        const point = { x: Math.round(form.x + 40), y: Math.round(form.y + 20), button: "left" as const, clickCount: 1 };
-        element.sendInputEvent({ type: "mouseDown", ...point });
-        element.sendInputEvent({ type: "mouseUp", ...point });
+      window.overlay.onFocusComposer(() => {
+        webview.current?.focus();
+        webview.current?.send("focus-composer");
       }),
     [],
   );
@@ -184,10 +172,16 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
   // The title is drawn inside T3's page, above the chat history or atop the composer card.
   const title = panelTitle(state.panel, titles.current);
-  const { titleInComposer, textOutline } = state.settings;
+  const { titleInComposer, textOutline, compactComposer } = state.settings;
+  // A thread waiting on an approval or an answer keeps its composer open.
+  const target = state.panel;
+  const threadState =
+    typeof target === "object" && target !== null ? titles.current.get(`${target.environmentId}:${target.threadId}`)?.state : undefined;
+  const needsReply = threadState === "approval" || threadState === "input";
+  const { side } = state;
   useEffect(() => {
-    if (ready) webview.current?.send("chrome", { title, titleInComposer, textOutline });
-  }, [ready, title, titleInComposer, textOutline]);
+    if (ready) webview.current?.send("chrome", { title, titleInComposer, textOutline, compactComposer, needsReply, side });
+  }, [ready, title, titleInComposer, textOutline, compactComposer, needsReply, side]);
 
   if (initialSrc === null) return null;
 

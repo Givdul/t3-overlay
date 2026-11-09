@@ -29,7 +29,7 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 
 | Action | How |
 | --- | --- |
-| Focus the composer | `Ctrl+Shift+Space` |
+| Focus the composer | `Ctrl+Shift+Space`, or the write button under the chat |
 | Hide or show the overlay | `Ctrl+Shift+H` |
 | Move | Drag the T3 logo |
 | Lock position, chat background opacity | Right-click the T3 logo |

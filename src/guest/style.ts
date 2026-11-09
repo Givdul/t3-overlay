@@ -121,12 +121,13 @@ html[data-overlay-outline] [data-slot="composer-shell"]::after {
   text-shadow: 0 0 2px #000, 0 0 3px #000, 1px 1px 1px #000;
 }
 
-/* "Title in composer": the title becomes the card's first row, using the shell's unused ::after. */
-html[data-overlay-route="thread"][data-overlay-title="composer"] [data-chat-canvas]::before {
+/* "Title in composer": the title becomes the card's first row, using the shell's unused ::after.
+   A folded composer has no card, so the title stays above the history then. */
+html[data-overlay-route="thread"][data-overlay-title="composer"]:not([data-overlay-composer-folded]) [data-chat-canvas]::before {
   display: none;
 }
 
-html[data-overlay-route="thread"][data-overlay-title="composer"] [data-workspace-area="conversation"] {
+html[data-overlay-route="thread"][data-overlay-title="composer"]:not([data-overlay-composer-folded]) [data-workspace-area="conversation"] {
   border-top: 1px solid var(--overlay-border);
   border-radius: var(--overlay-radius);
 }
@@ -164,6 +165,47 @@ html[data-overlay-route="thread"] [data-chat-composer-overlay] {
   order: 3;
   flex: none;
   margin-top: 6px;
+}
+
+/* "Compact composer" (folded in index.ts): the composer becomes a round write button under the chat,
+   on the side the overlay docks to. It copies T3's send button. Everything in the composer stays
+   mounted but hidden, so a draft and T3's editor state survive. */
+html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay] {
+  position: relative !important;
+  align-self: flex-end;
+  width: 32px;
+  height: 32px;
+  padding: 0 !important;
+  border-radius: 9999px;
+  cursor: pointer;
+  pointer-events: auto !important;
+  background: var(--message-action);
+  box-shadow:
+    inset 0 1px #ffffff29,
+    0 1px 2px 0 color-mix(in oklab, var(--message-action) 24%, transparent);
+  transition: background-color 150ms, scale 150ms;
+}
+
+html[data-overlay-route="thread"][data-overlay-side="left"][data-overlay-composer-folded] [data-chat-composer-overlay] {
+  align-self: flex-start;
+}
+
+html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay]:hover {
+  background: var(--message-action-hover, var(--message-action));
+  scale: 1.05;
+}
+
+html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay] > * {
+  display: none !important;
+}
+
+html[data-overlay-route="thread"][data-overlay-composer-folded] [data-chat-composer-overlay]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--message-action-foreground);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'/%3E%3Cpath d='M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z'/%3E%3C/svg%3E")
+    center / 14px no-repeat;
 }
 
 /* T3 lifts "Scroll to end" above its floating composer with an inline bottom offset. Here the
