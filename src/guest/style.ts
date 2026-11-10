@@ -232,7 +232,8 @@ html[data-overlay-route="thread"] .messages-timeline-scroll::-webkit-scrollbar-t
 
 /* Docked left, the history's scrollbar sits on the left edge. Chromium draws a vertical scrollbar on the
    inline-start side of a right-to-left scroller, so the scroller flips and its content flips back.
-   T3 pads the scroller with logical padding, which the flip would swap, so its padding is restated per side.
+   T3 pads the scroller with logical padding ([data-chat-canvas] .messages-timeline-scroll in its main CSS),
+   which the flip would swap, so its padding is restated per side. Re-check it when T3 changes that rule.
    T3's top fade (topbar-scroll-fade) leaves its third mask layer unfaded over the scrollbar, so that layer moves left too. */
 html[data-overlay-route="thread"][data-overlay-side="left"] .messages-timeline-scroll {
   --overlay-lane-padding: 0.75rem;
