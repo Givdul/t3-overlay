@@ -21,6 +21,7 @@
   --color-t3-accent: var(--t3-accent);
   --color-t3-popover: var(--t3-popover);
   --color-t3-info: var(--t3-info-foreground);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --font-sans: -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif;
 }
 

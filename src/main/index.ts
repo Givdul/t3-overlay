@@ -12,6 +12,7 @@ import {
   type Extent,
   type OverlaySettings,
   type OverlayState,
+  type PanelEntrance,
   type PanelTarget,
   type Popover,
   type SidebarThread,
@@ -43,6 +44,7 @@ const state: OverlayState = {
   threads: [],
   working: [],
   panel: null,
+  panelEntrance: "slide",
   panelSize: persisted.panelSize,
   popover: null,
   side: "left",
@@ -126,10 +128,10 @@ function update(patch: Partial<OverlayState>) {
   broadcast();
 }
 
-function openPanel(target: PanelTarget | null) {
+function openPanel(target: PanelTarget | null, entrance: PanelEntrance = "slide") {
   if (target !== null && typeof target === "object") persisted.lastThread = target;
   save();
-  update({ panel: target, popover: null });
+  update({ panel: target, panelEntrance: entrance, popover: null });
 }
 
 const threadKey = (thread: ThreadRef) => `${thread.environmentId}:${thread.threadId}`;
@@ -310,7 +312,8 @@ function focusComposer() {
   if (!win) return;
   rememberForeground(win);
   if (!win.isVisible()) win.showInactive();
-  if (state.panel === null) openPanel(persisted.lastThread ?? "draft");
+
+  if (state.panel === null) openPanel(persisted.lastThread ?? "draft", "instant");
   takeFocus(win);
   win.webContents.send("overlay:focus-composer");
 }

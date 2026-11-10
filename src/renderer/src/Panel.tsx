@@ -188,10 +188,18 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   if (initialSrc === null) return null;
 
   const visible = state.panel !== null;
+
+  // A transition runs with the values of the state it moves to, so the closed state has none and closes at once.
+  // The slide starts inside the gap to the sidebar, so the panel never draws over it.
+  const entrance = visible
+    ? state.panelEntrance === "slide"
+      ? "transition-[opacity,translate] duration-220 ease-out"
+      : ""
+    : `opacity-0 ${state.side === "left" ? "motion-safe:-translate-x-1.5" : "motion-safe:translate-x-1.5"}`;
   const corner = state.side === "left" ? "right-0 cursor-nwse-resize" : "left-0 cursor-nesw-resize";
 
   return (
-    <div className="flex flex-col" style={{ ...style, visibility: visible ? "visible" : "hidden" }}>
+    <div className={`flex flex-col ${entrance}`} style={{ ...style, visibility: visible ? "visible" : "hidden" }}>
       <webview
         key={initialSrc}
         ref={webview}

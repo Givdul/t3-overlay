@@ -3,21 +3,25 @@ import type { OverlayState } from "../../shared/types";
 import { ProjectGlyph } from "./ThreadIcon";
 
 /** A popover's card. It reports its height, so the window's shape ends where the card does. */
-function Surface({ className, style, children }: { className: string; style: CSSProperties; children: ReactNode }) {
+function Surface({ side, className, style, children }: { side: OverlayState["side"]; className: string; style: CSSProperties; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const observer = new ResizeObserver(() =>
-      window.overlay.setExtent({ popoverHeight: Math.ceil(element.getBoundingClientRect().height) }),
-    );
+
+    // The layout height: a bounding rect would include the entrance's scale, and the shape would clip the card.
+    const observer = new ResizeObserver(([entry]) => {
+      const height = entry?.borderBoxSize[0]?.blockSize;
+
+      if (height !== undefined) window.overlay.setExtent({ popoverHeight: Math.ceil(height) });
+    });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
   return (
     <div
       ref={ref}
-      className={`overflow-hidden rounded-xl border border-t3-border bg-t3-popover shadow-xl shadow-black/40 ${className}`}
+      className={`overflow-hidden rounded-xl border border-t3-border bg-t3-popover shadow-xl shadow-black/40 transition-[opacity,scale] duration-200 ease-out starting:opacity-0 motion-safe:starting:scale-96 ${side === "left" ? "origin-top-left" : "origin-top-right"} ${className}`}
       style={style}
     >
       {children}
@@ -27,7 +31,7 @@ function Surface({ className, style, children }: { className: string; style: CSS
 
 export function WorkingPopover({ state, style }: { state: OverlayState; style: CSSProperties }) {
   return (
-    <Surface className="flex flex-col" style={style}>
+    <Surface side={state.side} className="flex flex-col" style={style}>
       <div className="px-3 pt-2.5 pb-1 text-[11px] font-medium text-t3-muted">Working</div>
       <div className="flex min-h-0 flex-col overflow-y-auto p-1">
         {state.working.map((thread) => (
@@ -73,7 +77,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 export function SettingsPopover({ state, style }: { state: OverlayState; style: CSSProperties }) {
   const { settings } = state;
   return (
-    <Surface className="flex flex-col gap-3 p-3" style={style}>
+    <Surface side={state.side} className="flex flex-col gap-3 p-3" style={style}>
       <Toggle label="Lock position" checked={state.locked} onChange={(locked) => window.overlay.setLocked(locked)} />
       <Toggle
         label="Title in composer"

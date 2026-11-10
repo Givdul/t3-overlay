@@ -47,6 +47,7 @@ export function ProjectGlyph({ icon, size }: { icon: ProjectIcon; size: number }
 
 export function StateBadge({ state }: { state: SidebarThread["state"] }) {
   const ring = "absolute -right-1 -bottom-1 flex size-[15px] items-center justify-center rounded-full ring-2 ring-t3-sidebar";
+  const popIn = "transition-[opacity,scale] duration-250 ease-out starting:opacity-0 motion-safe:starting:scale-60";
   switch (state) {
     case "working":
       return (
@@ -55,18 +56,18 @@ export function StateBadge({ state }: { state: SidebarThread["state"] }) {
         </span>
       );
     case "approval":
-      return <span className={`${ring} bg-amber-300`} title="Pending approval" />;
+      return <span className={`${ring} ${popIn} bg-amber-300`} title="Pending approval" />;
     case "input":
-      return <span className={`${ring} bg-indigo-300`} title="Awaiting input" />;
+      return <span className={`${ring} ${popIn} bg-indigo-300`} title="Awaiting input" />;
     case "completed":
       return (
-        <span className={`${ring} bg-emerald-400`}>
+        <span className={`${ring} ${popIn} bg-emerald-400`}>
           <Check size={10} strokeWidth={3.5} className="text-black/80" />
         </span>
       );
     case "failed":
       return (
-        <span className={`${ring} bg-red-400`}>
+        <span className={`${ring} ${popIn} bg-red-400`}>
           <X size={10} strokeWidth={3.5} className="text-black/80" />
         </span>
       );
