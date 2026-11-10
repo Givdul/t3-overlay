@@ -41,6 +41,20 @@ body {
   font-size: 13px;
 }
 
+/* An unread thread's badge blinks a few times after it pops in, then stays filled until the thread is opened.
+   Only opacity animates: the badge sits at the edge of its slot's clip margin, so it can't grow. */
+@media (prefers-reduced-motion: no-preference) {
+  .unread-blink {
+    animation: unread-blink 1.2s ease-in-out 250ms 4;
+  }
+}
+
+@keyframes unread-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
 webview {
   display: flex;
   background: transparent;

@@ -45,35 +45,37 @@ export function ProjectGlyph({ icon, size }: { icon: ProjectIcon; size: number }
   }
 }
 
-export function StateBadge({ state }: { state: SidebarThread["state"] }) {
+/** The states that ask for the user. Each badge draws in its `color` through currentColor. */
+const ATTENTION_BADGES = {
+  approval: { color: "text-amber-300", title: "Pending approval", Icon: null },
+  input: { color: "text-indigo-300", title: "Awaiting input", Icon: null },
+  completed: { color: "text-emerald-400", title: undefined, Icon: Check },
+  failed: { color: "text-red-400", title: undefined, Icon: X },
+} as const;
+
+/** An unread badge is filled and blinks a few times as it arrives; once opened it is an outline. */
+export function StateBadge({ state, unread }: { state: SidebarThread["state"]; unread: boolean }) {
   const ring = "absolute -right-1 -bottom-1 flex size-[15px] items-center justify-center rounded-full ring-2 ring-t3-sidebar";
-  const popIn = "transition-[opacity,scale] duration-250 ease-out starting:opacity-0 motion-safe:starting:scale-60";
-  switch (state) {
-    case "working":
-      return (
-        <span className={`${ring} bg-t3-sidebar`}>
-          <CircleDashed size={12} className="text-t3-info" />
-        </span>
-      );
-    case "approval":
-      return <span className={`${ring} ${popIn} bg-amber-300`} title="Pending approval" />;
-    case "input":
-      return <span className={`${ring} ${popIn} bg-indigo-300`} title="Awaiting input" />;
-    case "completed":
-      return (
-        <span className={`${ring} ${popIn} bg-emerald-400`}>
-          <Check size={10} strokeWidth={3.5} className="text-black/80" />
-        </span>
-      );
-    case "failed":
-      return (
-        <span className={`${ring} ${popIn} bg-red-400`}>
-          <X size={10} strokeWidth={3.5} className="text-black/80" />
-        </span>
-      );
-    default:
-      return null;
+
+  if (state === "idle") return null;
+
+  if (state === "working") {
+    return (
+      <span className={`${ring} bg-t3-sidebar`}>
+        <CircleDashed size={12} className="text-t3-info" />
+      </span>
+    );
   }
+
+  const { color, title, Icon } = ATTENTION_BADGES[state];
+  const popIn = "transition-[opacity,scale,background-color] duration-250 ease-out starting:opacity-0 motion-safe:starting:scale-60";
+  const look = unread ? "unread-blink bg-current" : "border-[1.5px] border-current bg-t3-sidebar";
+
+  return (
+    <span className={`${ring} ${popIn} ${color} ${look}`} title={title}>
+      {Icon && <Icon size={unread ? 10 : 9} strokeWidth={3.5} className={unread ? "text-black/80" : undefined} />}
+    </span>
+  );
 }
 
 export function threadTooltip(thread: SidebarThread): string {

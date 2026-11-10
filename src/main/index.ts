@@ -9,6 +9,7 @@ import {
   popoverLeft,
   sameThread,
   slotLeft,
+  threadKey,
   type Extent,
   type GuestClientSettings,
   type OverlaySettings,
@@ -51,6 +52,7 @@ const state: OverlayState = {
   source: "none",
   threads: [],
   working: [],
+  unread: [],
   panel: null,
   panelEntrance: "slide",
   panelSize: persisted.panelSize,
@@ -139,23 +141,50 @@ function update(patch: Partial<OverlayState>) {
 function openPanel(target: PanelTarget | null, entrance: PanelEntrance = "slide") {
   if (target !== null && typeof target === "object") persisted.lastThread = target;
   save();
-  update({ panel: target, panelEntrance: entrance, popover: null });
+  update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
 }
 
-const threadKey = (thread: ThreadRef) => `${thread.environmentId}:${thread.threadId}`;
+/** A thread is read once the panel shows it. */
+function unreadWithout(panel: PanelTarget | null): ThreadRef[] {
+  return state.unread.filter((thread) => !sameThread(panel, thread));
+}
+
 let lastStates = new Map<string, SidebarThread["state"]>();
+
+/** A thread that stops working while it isn't on screen stays unread until it is opened or works again. */
+function nextUnread(threads: SidebarThread[]): ThreadRef[] {
+  const unread: ThreadRef[] = [];
+
+  for (const thread of threads) {
+    const waitsOnUser = thread.state !== "working" && thread.state !== "idle";
+    const onScreen = sameThread(state.panel, thread) && win?.isVisible() === true;
+    const stopped = lastStates.get(threadKey(thread)) === "working" && !onScreen;
+
+    if (waitsOnUser && (stopped || state.unread.some((ref) => sameThread(ref, thread)))) {
+      unread.push({ environmentId: thread.environmentId, threadId: thread.threadId });
+    }
+  }
+
+  return unread;
+}
 
 function setThreads(threads: SidebarThread[], source: OverlayState["source"]) {
   // A thread that was working a moment ago and is now completed just finished.
   const finished = threads.find((thread) => thread.state === "completed" && lastStates.get(threadKey(thread)) === "working");
-  lastStates = new Map(threads.map((thread) => [threadKey(thread), thread.state]));
+
+  // Opened before the unread pass, so a thread that opens itself is never drawn unread.
   if (finished && state.settings.openWhenDone && state.panel === null && win?.isVisible()) {
     openPanel({ environmentId: finished.environmentId, threadId: finished.threadId });
   }
+
+  const unread = nextUnread(threads);
+
+  lastStates = new Map(threads.map((thread) => [threadKey(thread), thread.state]));
   update({
     source,
     working: threads.filter((thread) => thread.state === "working"),
     threads: threads.filter((thread) => thread.state !== "working" || thread.pinned),
+    unread,
   });
 }
 
@@ -234,7 +263,10 @@ function createWindow() {
   win.on("focus", () => setReducedMotion(false));
   win.on("blur", () => setReducedMotion(true));
   win.on("ready-to-show", () => win?.showInactive());
-  win.on("show", broadcast);
+  win.on("show", () => {
+    state.unread = unreadWithout(state.panel);
+    broadcast();
+  });
   win.on("hide", broadcast);
   layout();
 

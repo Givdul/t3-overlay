@@ -42,6 +42,8 @@ export interface OverlayState {
   source: ThreadSource;
   threads: SidebarThread[];
   working: SidebarThread[];
+  /** Threads that stopped working since they were last opened in the panel. */
+  unread: ThreadRef[];
   panel: PanelTarget | null;
   /** How the panel last opened. The hotkey opens it at once, straight into typing. */
   panelEntrance: PanelEntrance;
@@ -107,6 +109,8 @@ export function slotLeft(side: OverlayState["side"]): number {
 export function popoverLeft(state: Pick<OverlayState, "panel" | "panelSize" | "side">, popover: Popover): number {
   return state.panel && state.side === "right" ? state.panelSize.width - POPOVER_SIZE[popover].width : slotLeft(state.side);
 }
+
+export const threadKey = (thread: ThreadRef) => `${thread.environmentId}:${thread.threadId}`;
 
 export function sameThread(a: PanelTarget | null, b: ThreadRef): boolean {
   return typeof a === "object" && a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;
