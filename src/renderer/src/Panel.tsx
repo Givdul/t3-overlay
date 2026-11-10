@@ -5,7 +5,6 @@ import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../
 interface WebviewElement extends HTMLWebViewElement {
   executeJavaScript(code: string): Promise<unknown>;
   getURL(): string;
-  src: string;
   send(channel: string, ...args: unknown[]): void;
   sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
 }
@@ -31,9 +30,6 @@ function routeFor(target: PanelTarget, signInFirst = false): string {
 
 const sameOrigin = (url: string, origin: string) =>
   URL.canParse(url) && URL.canParse(origin) && new URL(url).origin === new URL(origin).origin;
-
-/** Whether the webview still shows the T3 origin it was loaded on, not a page T3 navigated to. */
-const showsT3 = (element: WebviewElement) => sameOrigin(element.getURL(), element.src);
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,6 +72,13 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     setLoaded({ origin: state.origin, src: `${state.origin}${path}` });
   }
   const initialSrc = loaded?.src ?? null;
+  // Read by listeners registered once. Electron rewrites the webview's src on every load, so it can't stand in.
+  const t3Src = useRef(initialSrc);
+
+  t3Src.current = initialSrc;
+
+  /** Whether the webview still shows T3, not a page T3 navigated to. */
+  const showsT3 = (element: WebviewElement) => t3Src.current !== null && sameOrigin(element.getURL(), t3Src.current);
 
   for (const thread of [...state.threads, ...state.working]) {
     titles.current.set(`${thread.environmentId}:${thread.threadId}`, thread);

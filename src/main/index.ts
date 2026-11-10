@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle, type WebFrameMain } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -23,7 +23,7 @@ import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
 import {
   ensureSession,
-  isOtherPortOfSessionHost,
+  sessionTarget,
   readDesktopClientSettings,
   readServer,
   T3_PARTITION,
@@ -271,6 +271,15 @@ app.on("web-contents-created", (_event, contents) => {
   }
 });
 
+/** A frame that has gone away throws on access; its requests count as from nowhere. */
+function frameUrl(frame: WebFrameMain | null | undefined): string | undefined {
+  try {
+    return frame?.url;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseUrl(url: string | undefined): URL | null {
   if (url === undefined || !URL.canParse(url)) return null;
 
@@ -297,11 +306,14 @@ function configureT3Partition() {
 
     return granted && isT3Origin(requestingOrigin);
   });
-  // The session cookie holds T3's bearer token. Only the T3 server gets it, not another loopback port the page reaches.
+  // The session cookie holds T3's bearer token. Only T3's own page sends it, and only to the T3 server:
+  // not to another loopback port, and not for a page T3 navigated to. Offline, state.origin is null and nothing sends it.
   t3.webRequest.onBeforeSendHeaders((details, callback) => {
     const { requestHeaders } = details;
+    const target = sessionTarget(details.url);
+    const fromT3 = isT3Origin(details.resourceType === "mainFrame" ? details.url : frameUrl(details.frame));
 
-    if (isOtherPortOfSessionHost(details.url)) {
+    if (target === "other port" || (target === "server" && !fromT3)) {
       for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === "cookie") delete requestHeaders[name];
     }
 

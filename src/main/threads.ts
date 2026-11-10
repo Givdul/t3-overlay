@@ -48,9 +48,11 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
       // Stopped while the stream was opening.
       if (stopped) stopStream();
     } catch (error) {
+      if (stopped) return;
+
       if (error instanceof AuthExpiredError) options.onAuthExpired();
       else console.error("[t3] shell stream failed", error);
-      if (!stopped) options.onLost();
+      options.onLost();
     }
   })();
 
