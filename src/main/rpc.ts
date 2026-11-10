@@ -85,9 +85,11 @@ export type ThreadCommand = { type: "thread.snooze"; threadId: string; snoozedUn
 /** Sends one command and resolves once T3 has accepted it. */
 export async function dispatchCommand(server: T3Server, token: string, command: ThreadCommand): Promise<void> {
   const socket = await openSocket(server, token);
+  let timeout: NodeJS.Timeout | undefined;
 
   try {
     await new Promise<void>((resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error(`${command.type}: no answer from T3`)), 10_000);
       socket.addEventListener("open", () => {
         socket.send(
           JSON.stringify({
@@ -112,6 +114,7 @@ export async function dispatchCommand(server: T3Server, token: string, command: 
       socket.addEventListener("error", () => reject(new Error(`${command.type}: socket error`)));
     });
   } finally {
+    clearTimeout(timeout);
     socket.close();
   }
 }

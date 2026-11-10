@@ -457,7 +457,7 @@ async function snooze(server: T3Server, thread: ThreadRef, until: Date) {
 }
 
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
-  const server = localServer;
+  const server = state.t3 === "connected" ? localServer : null;
   const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
   // T3 refuses to snooze a thread that waits on the user.
   const waitsOnUser = listed?.state === "approval" || listed?.state === "input";
@@ -467,9 +467,9 @@ onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   Menu.buildFromTemplate([
     { label: "Settle", click: () => win?.webContents.send("overlay:settle", thread) },
     {
-      label: "Snooze",
+      // Menu tooltips only show on macOS, so a disabled item says why in its label.
+      label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
       enabled: onThisPc && !waitsOnUser,
-      toolTip: waitsOnUser ? "Respond to the thread first" : onThisPc ? undefined : "Only threads on this PC can be snoozed here",
       submenu: snoozeChoices(new Date()).map((choice) => ({
         label: choice.label,
         click: () => server && void snooze(server, thread, choice.until),
