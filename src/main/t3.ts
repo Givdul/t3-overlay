@@ -13,6 +13,8 @@ export interface T3Server {
   origin: string;
   port: number;
   serverVersion: string;
+  /** The environment this server is, as threads on it name it. */
+  environmentId: string;
 }
 
 /** Whether `pid` is a running process this user may signal. Another user's process counts as not running. */
@@ -37,7 +39,10 @@ export async function readServer(): Promise<T3Server | null> {
     if (!isAlive(raw.pid)) return null;
     const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
     if (!response.ok) return null;
-    return { origin: raw.origin, port: raw.port, serverVersion: raw.serverVersion };
+    // SAFETY: T3's environment descriptor always names its environmentId.
+    const { environmentId } = (await response.json()) as { environmentId: string };
+
+    return { origin: raw.origin, port: raw.port, serverVersion: raw.serverVersion, environmentId };
   } catch {
     return null;
   }

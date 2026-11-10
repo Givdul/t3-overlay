@@ -18,7 +18,7 @@ export interface StreamHandlers {
   onClose: (reason: string) => void;
 }
 
-export async function openShellStream(server: T3Server, token: string, handlers: StreamHandlers): Promise<() => void> {
+async function openSocket(server: T3Server, token: string): Promise<WebSocket> {
   const ticketResponse = await fetch(`${server.origin}/api/auth/websocket-ticket`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
@@ -30,7 +30,12 @@ export async function openShellStream(server: T3Server, token: string, handlers:
   const url = new URL("/ws", server.origin.replace(/^http/, "ws"));
   url.searchParams.set("orchestrationProtocol", "2");
   url.searchParams.set("wsTicket", ticket);
-  const socket = new WebSocket(url);
+
+  return new WebSocket(url);
+}
+
+export async function openShellStream(server: T3Server, token: string, handlers: StreamHandlers): Promise<() => void> {
+  const socket = await openSocket(server, token);
   let closed = false;
   const ping = setInterval(() => socket.readyState === WebSocket.OPEN && socket.send('{"_tag":"Ping"}'), 10_000);
 
@@ -72,4 +77,41 @@ export async function openShellStream(server: T3Server, token: string, handlers:
     clearInterval(ping);
     socket.close();
   };
+}
+
+/** A thread command for T3's orchestration engine (packages/contracts, OrchestrationCommand). */
+export type ThreadCommand = { type: "thread.snooze"; threadId: string; snoozedUntil: string };
+
+/** Sends one command and resolves once T3 has accepted it. */
+export async function dispatchCommand(server: T3Server, token: string, command: ThreadCommand): Promise<void> {
+  const socket = await openSocket(server, token);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("open", () => {
+        socket.send(
+          JSON.stringify({
+            _tag: "Request",
+            id: "1",
+            tag: "orchestration.dispatchCommand",
+            payload: { ...command, commandId: crypto.randomUUID() },
+            headers: [],
+          }),
+        );
+      });
+      socket.addEventListener("message", (event) => {
+        // SAFETY: T3's RPC socket sends a JSON frame or an array of them.
+        const parsed = JSON.parse(String(event.data)) as ServerFrame | ServerFrame[];
+
+        for (const frame of Array.isArray(parsed) ? parsed : [parsed]) {
+          if (frame._tag === "Exit" && "exit" in frame && frame.exit._tag === "Success") resolve();
+          else if (frame._tag === "Exit" || frame._tag === "Defect") reject(new Error(`${command.type} failed: ${JSON.stringify(frame).slice(0, 300)}`));
+        }
+      });
+      socket.addEventListener("close", () => reject(new Error(`${command.type}: socket closed`)));
+      socket.addEventListener("error", () => reject(new Error(`${command.type}: socket error`)));
+    });
+  } finally {
+    socket.close();
+  }
 }
