@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle, type WebContents, type WebFrameMain } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle, type WebFrameMain } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -254,37 +254,19 @@ app.on("web-contents-created", (_event, contents) => {
   });
   if (contents.getType() === "webview") {
     trackMotion(contents);
-    openLinksOutside(contents);
+    // The panel never opens app windows. Web links from T3's own page go to the default browser; a page
+    // T3 navigated to can't open browser tabs. Electron only consults this because the panel's webview
+    // sets `allowpopups`. Without it, T3's `window.open` for a system-browser link opens nothing.
+    contents.setWindowOpenHandler(({ url }) => {
+      const parsed = parseUrl(url);
+      const web = parsed?.protocol === "https:" || parsed?.protocol === "http:";
+
+      if (parsed !== null && web && isT3Origin(contents.getURL())) void shell.openExternal(parsed.href);
+
+      return { action: "deny" };
+    });
   }
 });
-
-/**
- * Electron only consults the handler because the panel's webview sets `allowpopups`. Without it, T3's
- * `window.open` for a system-browser link returns null and nothing opens.
- */
-function openLinksOutside(contents: WebContents) {
-  contents.setWindowOpenHandler(({ url }) => {
-    const parsed = parseUrl(url);
-
-    if (parsed === null) return { action: "deny" };
-
-    // T3 Connect sign-in may pop up auth pages (T3, Clerk, or the identity provider while connecting);
-    // they must share the webview's session.
-    if (state.panel === "connect") {
-      return { action: "allow", overrideBrowserWindowOptions: { webPreferences: { partition: T3_PARTITION } } };
-    }
-
-    // Every other web link goes to the default browser, and only from T3's own page, so a page T3
-    // navigated to can't open browser tabs.
-    const web = parsed.protocol === "https:" || parsed.protocol === "http:";
-
-    if (web && isT3Origin(contents.getURL())) void shell.openExternal(parsed.href);
-
-    return { action: "deny" };
-  });
-  // A sign-in window follows the same rules, so its own links never open further app windows.
-  contents.on("did-create-window", (child) => openLinksOutside(child.webContents));
-}
 
 /** A frame that has gone away throws on access; its requests count as from nowhere. */
 function frameUrl(frame: WebFrameMain | null | undefined): string | undefined {
