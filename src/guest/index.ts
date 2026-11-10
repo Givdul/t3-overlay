@@ -1,25 +1,31 @@
 // Preload for the T3 webview. Runs in an isolated world inside T3's own web UI.
 import { ipcRenderer } from "electron";
+import type { GuestClientSettings } from "../shared/types";
 import { GUEST_CSS, REQUIRED_HOOKS } from "./style";
 
 const CLIENT_SETTINGS_KEY = "t3code:client-settings:v1";
 
-// Without the desktop app's settings file, the panel keeps the settings it stored on an earlier run.
-// SAFETY: the main process answers "guest:client-settings" with the settings file's text, or null when it can't be read.
-const settings = (ipcRenderer.sendSync("guest:client-settings") as string | null) ?? localStorage.getItem(CLIENT_SETTINGS_KEY) ?? "{}";
+// SAFETY: the main process answers "guest:client-settings" with a GuestClientSettings.
+const reply = ipcRenderer.sendSync("guest:client-settings") as GuestClientSettings;
 
-// The panel always shows T3's composer context strip (environment and permission), which the overlay
-// moves into the composer box. Links and pull requests always open in the system browser, never in T3's
-// in-app browser. The desktop app's own settings are left alone.
-localStorage.setItem(
-  CLIENT_SETTINGS_KEY,
-  JSON.stringify({
-    ...JSON.parse(settings),
-    persistComposerContextStrip: true,
-    browserLinkTarget: "system",
-    pullRequestLinksOpenInApp: false,
-  }),
-);
+// A page T3 navigated to gets no settings written into its storage.
+if (reply !== null) {
+  // Without the desktop app's settings file, the panel keeps the settings it stored on an earlier run.
+  const settings = reply.settings ?? localStorage.getItem(CLIENT_SETTINGS_KEY) ?? "{}";
+
+  // The panel always shows T3's composer context strip (environment and permission), which the overlay
+  // moves into the composer box. Links and pull requests always open in the system browser, never in T3's
+  // in-app browser. The desktop app's own settings are left alone.
+  localStorage.setItem(
+    CLIENT_SETTINGS_KEY,
+    JSON.stringify({
+      ...JSON.parse(settings),
+      persistComposerContextStrip: true,
+      browserLinkTarget: "system",
+      pullRequestLinksOpenInApp: false,
+    }),
+  );
+}
 // T3's own thread sidebar stays collapsed; the overlay has its own.
 localStorage.setItem("chat_thread_sidebar_open", "false");
 

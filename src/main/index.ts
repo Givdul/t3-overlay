@@ -10,6 +10,7 @@ import {
   sameThread,
   slotLeft,
   type Extent,
+  type GuestClientSettings,
   type OverlaySettings,
   type OverlayState,
   type PanelEntrance,
@@ -253,7 +254,8 @@ app.on("web-contents-created", (_event, contents) => {
   });
   if (contents.getType() === "webview") {
     trackMotion(contents);
-    // Electron only consults this once the webview has `allowpopups`, which the panel doesn't set.
+    // Electron only consults this because the panel's webview sets `allowpopups`. Without it, T3's
+    // `window.open` for a system-browser link returns null and nothing opens.
     contents.setWindowOpenHandler(({ url }) => {
       const parsed = parseUrl(url);
 
@@ -493,7 +495,9 @@ onHost("overlay:hooks", (_event, missing: string[]) => {
 ipcMain.on("guest:client-settings", (event) => {
   // The guest preload runs on every page the webview loads; only T3's own page gets the desktop settings.
   const fromT3 = event.sender.getType() === "webview" && isT3Origin(event.senderFrame?.url);
-  event.returnValue = fromT3 ? clientSettings : null;
+  const reply: GuestClientSettings = fromT3 ? { settings: clientSettings } : null;
+
+  event.returnValue = reply;
 });
 
 // ---------------------------------------------------------------- app
