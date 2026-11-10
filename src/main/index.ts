@@ -34,6 +34,8 @@ import {
 import { startThreadFeed, type ThreadFeed } from "./threads";
 import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
+import { dispatchCommand } from "./rpc";
+import { snoozeChoices } from "./snooze";
 import { setReducedMotion, trackMotion } from "./motion";
 
 const persisted = loadPersisted();
@@ -44,6 +46,9 @@ let clientSettings: string | null = null;
 /** The desktop app's theme keys, read over the debugging port. Null without it. */
 let themeStorage: ThemeStorage | null = null;
 let feed: ThreadFeed | null = null;
+
+/** This PC's T3 server while the overlay is connected to it. */
+let localServer: T3Server | null = null;
 
 const state: OverlayState = {
   origin: null,
@@ -192,6 +197,7 @@ function setThreads(threads: SidebarThread[], source: OverlayState["source"]) {
 
 async function connect() {
   const server = await readServer();
+  localServer = server;
   if (server === null) {
     feed?.stop();
     feed = null;
@@ -474,9 +480,33 @@ onHost("overlay:popover", (_event, popover: Popover | null) => {
   update({ popover });
 });
 
+async function snooze(server: T3Server, thread: ThreadRef, until: Date) {
+  try {
+    await dispatchCommand(server, await ensureSession(server), { type: "thread.snooze", threadId: thread.threadId, snoozedUntil: until.toISOString() });
+  } catch (error) {
+    console.error("[t3] snooze failed", error);
+  }
+}
+
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
+  const server = state.t3 === "connected" ? localServer : null;
+  const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
+  // T3 refuses to snooze a thread that waits on the user.
+  const waitsOnUser = listed?.state === "approval" || listed?.state === "input";
+  // The overlay's own connection reaches this PC's server only.
+  const onThisPc = server !== null && server.environmentId === thread.environmentId;
+
   Menu.buildFromTemplate([
     { label: "Settle", click: () => win?.webContents.send("overlay:settle", thread) },
+    {
+      // Menu tooltips only show on macOS, so a disabled item says why in its label.
+      label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
+      enabled: onThisPc && !waitsOnUser,
+      submenu: snoozeChoices(new Date()).map((choice) => ({
+        label: choice.label,
+        click: () => server && void snooze(server, thread, choice.until),
+      })),
+    },
   ]).popup({ window: win ?? undefined });
 });
 
