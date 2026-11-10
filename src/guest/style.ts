@@ -230,6 +230,29 @@ html[data-overlay-route="thread"] .messages-timeline-scroll::-webkit-scrollbar-t
   margin-block: var(--overlay-radius) max(var(--overlay-radius), var(--overlay-composer-overlap));
 }
 
+/* Docked left, the history's scrollbar sits on the left edge. Chromium draws a vertical scrollbar on the
+   inline-start side of a right-to-left scroller, so the scroller flips and its content flips back.
+   T3 pads the scroller with logical padding ([data-chat-canvas] .messages-timeline-scroll in its main CSS),
+   which the flip would swap, so its padding is restated per side. Re-check it when T3 changes that rule.
+   T3's top fade (topbar-scroll-fade) leaves its third mask layer unfaded over the scrollbar, so that layer moves left too. */
+html[data-overlay-route="thread"][data-overlay-side="left"] .messages-timeline-scroll {
+  --overlay-lane-padding: 0.75rem;
+  direction: rtl;
+  padding-left: calc(var(--overlay-lane-padding) + var(--chat-lane-inset-start, 0px) - var(--chat-timeline-gutter, 0px));
+  padding-right: calc(var(--overlay-lane-padding) + var(--chat-lane-inset-end, 0px) - var(--chat-timeline-gutter, 0px));
+  mask-position: top, bottom, 0%;
+}
+
+@media (width >= 640px) {
+  html[data-overlay-route="thread"][data-overlay-side="left"] .messages-timeline-scroll {
+    --overlay-lane-padding: 3rem;
+  }
+}
+
+html[data-overlay-route="thread"][data-overlay-side="left"] .messages-timeline-scroll > * {
+  direction: ltr;
+}
+
 /* T3 lifts "Scroll to end" above its floating composer with an inline bottom offset. Here the
    composer sits below the history, so the button goes to the bottom of the history instead. */
 html[data-overlay-route="thread"] [data-workspace-area="conversation"] > div:has(> [data-scroll-to-end]) {
