@@ -11,6 +11,7 @@ interface ThreadShell {
   status: string;
   activityRunStatus?: string | null;
   pendingRuntimeRequest: { kind: string } | null;
+  pendingBackgroundTasks?: { kind: string; awaited?: boolean }[];
   lineage: { parentThreadId: string | null; relationshipToParent: string | null; rootThreadId: string; sideChat?: boolean };
   updatedAt: string;
   archivedAt: string | null;
@@ -165,10 +166,21 @@ function requestState(kind: string): ThreadState {
 
 function threadState(thread: ThreadShell): ThreadState {
   if (thread.pendingRuntimeRequest) return requestState(thread.pendingRuntimeRequest.kind);
-  if (thread.activityRunStatus || WORKING.has(thread.status)) return "working";
+
+  if (thread.activityRunStatus || WORKING.has(thread.status) || waitsOnBackgroundWork(thread)) return "working";
   if (thread.status === "failed" || thread.status === "interrupted") return "failed";
   if (thread.status === "completed") return "completed";
   return "idle";
+}
+
+/**
+ * A thread whose turn ended while subagents or background tasks it awaits still run. T3's sidebar shows it as
+ * "Waiting" inside its Working group. As in T3, commands and monitors count only when awaited.
+ */
+function waitsOnBackgroundWork(thread: ThreadShell): boolean {
+  return (thread.pendingBackgroundTasks ?? []).some(
+    (task) => task.awaited === true || task.kind === "subagent" || task.kind === "background_task",
+  );
 }
 
 function projectIcon(project: ProjectShell | undefined, favicon: string | undefined): ProjectIcon {
