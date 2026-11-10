@@ -30,6 +30,9 @@ export type ThreadSource = "all-machines" | "local" | "none";
 
 export type PanelTarget = ThreadRef | "draft" | "connect";
 
+/** "slide" fades the panel in out of the sidebar. */
+export type PanelEntrance = "slide" | "instant";
+
 export interface OverlayState {
   /** Origin the chat panel loads T3's web UI from. */
   origin: string | null;
@@ -40,6 +43,8 @@ export interface OverlayState {
   threads: SidebarThread[];
   working: SidebarThread[];
   panel: PanelTarget | null;
+  /** How the panel last opened. The hotkey opens it at once, straight into typing. */
+  panelEntrance: PanelEntrance;
   panelSize: { width: number; height: number };
   popover: Popover | null;
   side: "left" | "right";
