@@ -33,7 +33,9 @@ html[data-overlay-route="thread"]:not([data-overlay-composer-folded]) {
 [data-chat-header],
 [data-right-panel-tabbar],
 [data-right-panel-surface-content],
-[data-right-panel-toggle] {
+[data-right-panel-toggle],
+[data-thread-details-panel],
+[data-preview-mini-player] {
   display: none !important;
 }
 

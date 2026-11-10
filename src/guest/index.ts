@@ -15,7 +15,8 @@ if (reply !== null) {
 
   // The panel always shows T3's composer context strip (environment and permission), which the overlay
   // moves into the composer box. Links and pull requests always open in the system browser, never in T3's
-  // in-app browser. The desktop app's own settings are left alone.
+  // in-app browser. Thread notifications (toasts, system notifications, sounds) stay off: the overlay's
+  // sidebar shows those states. The desktop app's own settings are left alone.
   localStorage.setItem(
     CLIENT_SETTINGS_KEY,
     JSON.stringify({
@@ -23,6 +24,8 @@ if (reply !== null) {
       persistComposerContextStrip: true,
       browserLinkTarget: "system",
       pullRequestLinksOpenInApp: false,
+      inAppNotificationsEnabled: false,
+      notificationMode: "off",
     }),
   );
 }

@@ -1,6 +1,6 @@
 import { CircleDashed, Plus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { SIDEBAR_WIDTH, sameThread, type OverlayState, type SidebarThread } from "../../shared/types";
+import { SIDEBAR_WIDTH, sameThread, threadKey, type OverlayState } from "../../shared/types";
 import { ProjectGlyph, StateBadge, threadTooltip } from "./ThreadIcon";
 
 const VISIBLE_THREADS = 5;
@@ -103,8 +103,6 @@ function arrive<T>(present: Presence<T>[], items: T[], keyOf: (item: T) => strin
 
   return next;
 }
-
-const threadKey = (thread: SidebarThread) => `${thread.environmentId}:${thread.threadId}`;
 
 /** T3 Code's wordmark, copied from its apps/web/src/components/T3Wordmark.tsx. */
 function T3Wordmark({ className }: { className?: string }) {
@@ -239,7 +237,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
                 onContextMenu={() => window.overlay.threadMenu(thread)}
               >
                 <ProjectGlyph icon={thread.icon} size={26} />
-                <StateBadge key={thread.state} state={thread.state} />
+                <StateBadge key={thread.state} state={thread.state} unread={state.unread.some((ref) => sameThread(ref, thread))} />
               </button>
             </div>
           ))}
