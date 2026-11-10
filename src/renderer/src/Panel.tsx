@@ -4,8 +4,13 @@ import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../
 
 interface WebviewElement extends HTMLWebViewElement {
   executeJavaScript(code: string): Promise<unknown>;
+  getURL(): string;
   send(channel: string, ...args: unknown[]): void;
   sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
+}
+
+interface DidNavigateEvent extends Event {
+  url: string;
 }
 
 interface IpcMessageEvent extends Event {
@@ -22,6 +27,9 @@ function routeFor(target: PanelTarget, signInFirst = false): string {
   if (target === "connect") return signInFirst ? "/" : "/settings/connections";
   return `/${encodeURIComponent(target.environmentId)}/${encodeURIComponent(target.threadId)}`;
 }
+
+const sameOrigin = (url: string, origin: string) =>
+  URL.canParse(url) && URL.canParse(origin) && new URL(url).origin === new URL(origin).origin;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,26 +72,44 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     setLoaded({ origin: state.origin, src: `${state.origin}${path}` });
   }
   const initialSrc = loaded?.src ?? null;
+  // Read by listeners registered once. Electron rewrites the webview's src on every load, so it can't stand in.
+  const t3Src = useRef(initialSrc);
+
+  t3Src.current = initialSrc;
+
+  /** Whether the webview still shows T3, not a page T3 navigated to. */
+  const showsT3 = (element: WebviewElement) => t3Src.current !== null && sameOrigin(element.getURL(), t3Src.current);
 
   for (const thread of [...state.threads, ...state.working]) {
     titles.current.set(`${thread.environmentId}:${thread.threadId}`, thread);
   }
 
   const navigate = async (path: string) => {
-    if (!webview.current || route.current === path) return;
+    if (!webview.current || route.current === path || !showsT3(webview.current)) return;
     route.current = path;
     await webview.current.executeJavaScript(`history.pushState(null, "", ${JSON.stringify(path)})`);
   };
 
   useEffect(() => {
     const element = webview.current;
-    if (!element) return;
+
+    if (!element || initialSrc === null) return;
+    // The thread title, theme and page scripts go only to T3's own page, not to a page it navigated to.
+    const onT3 = (url: string) => sameOrigin(url, initialSrc);
     const onReady = () => {
-      setReady(true);
-      element.send("opacity", state.opacity);
+      setReady(onT3(element.getURL()));
+
+      if (onT3(element.getURL())) element.send("opacity", state.opacity);
+    };
+
+    const onNavigate = (event: Event) => {
+      // SAFETY: Electron fires did-navigate on a <webview> with the new top-level URL.
+      if (!onT3((event as DidNavigateEvent).url)) setReady(false);
     };
     const onMessage = (event: Event) => {
       const { channel, args } = event as IpcMessageEvent;
+
+      if (!onT3(element.getURL())) return;
       if (channel === "escape") window.overlay.escape();
       if (channel === "sent") window.overlay.sent();
       if (channel === "hooks") window.overlay.reportHooks(args[0] as string[]);
@@ -100,9 +126,11 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
       }
     };
     element.addEventListener("dom-ready", onReady);
+    element.addEventListener("did-navigate", onNavigate);
     element.addEventListener("ipc-message", onMessage);
     return () => {
       element.removeEventListener("dom-ready", onReady);
+      element.removeEventListener("did-navigate", onNavigate);
       element.removeEventListener("ipc-message", onMessage);
     };
   }, [initialSrc]);
@@ -161,6 +189,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         try {
           await navigate(routeFor(thread));
           await wait(500);
+
+          if (!showsT3(element)) return;
           element.sendInputEvent({ type: "keyDown", keyCode: "S", modifiers: ["control", "shift"] });
           element.sendInputEvent({ type: "keyUp", keyCode: "S", modifiers: ["control", "shift"] });
           await wait(300);

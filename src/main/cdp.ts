@@ -61,7 +61,9 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     return null;
   }
   const page = targets.find((target) => target.type === "page" && /^t3code(-dev)?:\/\/app/.test(target.url));
-  if (!page) return null;
+
+  // Only T3's own debugger on this port; a listing could point the socket anywhere.
+  if (!page || !page.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${options.port}/`)) return null;
 
   const socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
@@ -187,10 +189,17 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
   });
 
   // The overlay reads only socket frames, so T3's renderer keeps no response bodies for it.
-  await send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
-  await send("DOMStorage.enable");
-  await seed();
-  await readTheme();
+  try {
+    await send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
+    await send("DOMStorage.enable");
+    await seed();
+    await readTheme();
+  } catch (error) {
+    // The caller falls back to the local feed, so this socket must not keep feeding threads.
+    stopped = true;
+    socket.close();
+    throw error;
+  }
 
   return {
     stop() {

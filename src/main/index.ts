@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type Rectangle } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle, type WebFrameMain } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -21,7 +21,14 @@ import {
 import type { ThemeStorage } from "../shared/theme";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureSession, readDesktopClientSettings, readServer, T3_PARTITION, type T3Server } from "./t3";
+import {
+  ensureSession,
+  sessionTarget,
+  readDesktopClientSettings,
+  readServer,
+  T3_PARTITION,
+  type T3Server,
+} from "./t3";
 import { startThreadFeed, type ThreadFeed } from "./threads";
 import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
@@ -214,9 +221,14 @@ function createWindow() {
     show: false,
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.cjs"),
+      contextIsolation: true,
+      sandbox: true,
       webviewTag: true,
     },
   });
+  // The overlay's own page never navigates or opens windows; only the T3 webview inside it does.
+  win.webContents.on("will-navigate", (event) => event.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.setAlwaysOnTop(true, "screen-saver");
   win.on("focus", () => setReducedMotion(false));
   win.on("blur", () => setReducedMotion(true));
@@ -225,7 +237,7 @@ function createWindow() {
   win.on("hide", broadcast);
   layout();
 
-  if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(import.meta.dirname, "../renderer/index.html"));
 }
 
@@ -236,31 +248,82 @@ app.on("web-contents-created", (_event, contents) => {
     webPreferences.nodeIntegration = false;
     webPreferences.sandbox = true;
     params.partition = T3_PARTITION;
-    if (state.origin === null || !params.src?.startsWith(state.origin)) event.preventDefault();
+
+    if (!isT3Origin(params.src)) event.preventDefault();
   });
   if (contents.getType() === "webview") {
     trackMotion(contents);
+    // Electron only consults this once the webview has `allowpopups`, which the panel doesn't set.
     contents.setWindowOpenHandler(({ url }) => {
+      const parsed = parseUrl(url);
+
+      if (parsed === null) return { action: "deny" };
+
       // T3 Connect sign-in may pop up auth pages (T3, Clerk, or the identity provider while connecting);
-      // they must share the webview's session. Other links open in the default browser.
-      if (state.panel === "connect" || /(^|\.)t3\.codes$|clerk/.test(new URL(url).hostname)) {
+      // they must share the webview's session. Other web links open in the default browser.
+      if (state.panel === "connect" || /(^|\.)(t3\.codes|clerk\.com|clerk\.accounts\.dev)$/.test(parsed.hostname)) {
         return { action: "allow", overrideBrowserWindowOptions: { webPreferences: { partition: T3_PARTITION } } };
       }
-      void shell.openExternal(url);
+
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") void shell.openExternal(parsed.href);
       return { action: "deny" };
     });
   }
 });
 
+/** A frame that has gone away throws on access; its requests count as from nowhere. */
+function frameUrl(frame: WebFrameMain | null | undefined): string | undefined {
+  try {
+    return frame?.url;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseUrl(url: string | undefined): URL | null {
+  if (url === undefined || !URL.canParse(url)) return null;
+
+  return new URL(url);
+}
+
+/** Whether `url` is on the T3 origin the panel loads. Only that origin gets the panel's grants and data. */
+function isT3Origin(url: string | undefined): boolean {
+  return state.origin !== null && parseUrl(url)?.origin === new URL(state.origin).origin;
+}
+
 function configureT3Partition() {
   const t3 = session.fromPartition(T3_PARTITION);
   // Identity providers such as Google refuse sign-in from pages that announce an embedded Electron app.
   t3.setUserAgent(t3.getUserAgent().replace(/ (Electron|t3-overlay)\/\S+/g, ""));
+  // The microphone (dictation) and clipboard are T3's own; pages the panel navigates to get neither.
   t3.setPermissionRequestHandler((_contents, permission, callback, details) => {
     const media = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
-    callback((permission === "media" && !media.includes("video")) || permission.startsWith("clipboard"));
+    const granted = (permission === "media" && !media.includes("video")) || permission.startsWith("clipboard");
+    callback(granted && isT3Origin(details.requestingUrl));
   });
-  t3.setPermissionCheckHandler((_contents, permission) => permission === "media" || permission.startsWith("clipboard"));
+  t3.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) => {
+    const granted = (permission === "media" && details.mediaType !== "video") || permission.startsWith("clipboard");
+
+    return granted && isT3Origin(requestingOrigin);
+  });
+  // The session cookie holds T3's bearer token. Only T3's own page sends it, and only to a connected T3 server:
+  // not to another loopback port, not for a page T3 navigated to, and not to a port T3 may have left.
+  t3.webRequest.onBeforeSendHeaders((details, callback) => {
+    const { requestHeaders } = details;
+    const target = sessionTarget(details.url);
+
+    // A navigation counts by where it goes, so only a GET: a form another page posts to T3 carries no session.
+    const fromT3 =
+      details.resourceType === "mainFrame"
+        ? details.method === "GET" && isT3Origin(details.url)
+        : isT3Origin(frameUrl(details.frame));
+
+    if (target === "other port" || (target === "server" && !(fromT3 && state.t3 === "connected"))) {
+      for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === "cookie") delete requestHeaders[name];
+    }
+
+    callback({ requestHeaders });
+  });
 }
 
 // ---------------------------------------------------------------- drag and resize
@@ -341,61 +404,96 @@ function registerHotkeys() {
 
 // ---------------------------------------------------------------- IPC
 
-ipcMain.handle("overlay:init", () => ({ state }));
-ipcMain.handle("overlay:get-theme-storage", () => themeStorage);
-ipcMain.on("overlay:extent", (_event, next: Partial<Extent>) => {
+/** Overlay channels answer only the overlay's own window, never the T3 webview or a page it opened. */
+function onHost<A extends unknown[]>(channel: string, listener: (event: IpcMainEvent, ...args: A) => void) {
+  ipcMain.on(channel, (event, ...args) => {
+    if (event.sender !== win?.webContents) return;
+
+    // SAFETY: the sender is the overlay window, whose preload sends this channel's payload type A.
+    listener(event, ...(args as A));
+  });
+}
+
+function handleHost<T>(channel: string, handler: () => T) {
+  ipcMain.handle(channel, (event) => {
+    if (event.sender !== win?.webContents) throw new Error(`${channel}: not the overlay window`);
+
+    return handler();
+  });
+}
+
+handleHost("overlay:init", () => ({ state }));
+
+handleHost("overlay:get-theme-storage", () => themeStorage);
+
+onHost("overlay:extent", (_event, next: Partial<Extent>) => {
   if (Object.entries(next).every(([key, value]) => extent[key as keyof Extent] === value)) return;
   extent = { ...extent, ...next };
   layout();
   broadcast();
 });
-ipcMain.on("overlay:open", (_event, target: PanelTarget | null) => openPanel(target));
-ipcMain.on("overlay:follow", (_event, thread: ThreadRef) => {
+
+onHost("overlay:open", (_event, target: PanelTarget | null) => openPanel(target));
+
+onHost("overlay:follow", (_event, thread: ThreadRef) => {
   if (state.panel !== null && !sameThread(state.panel, thread)) openPanel(thread);
 });
-ipcMain.on("overlay:popover", (_event, popover: Popover | null) => {
+
+onHost("overlay:popover", (_event, popover: Popover | null) => {
   // Until the new popover reports its height, the window's shape covers its largest size.
   extent = { ...extent, popoverHeight: null };
   update({ popover });
 });
-ipcMain.on("overlay:thread-menu", (_event, thread: ThreadRef) => {
+
+onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   Menu.buildFromTemplate([
     { label: "Settle", click: () => win?.webContents.send("overlay:settle", thread) },
   ]).popup({ window: win ?? undefined });
 });
-ipcMain.on("overlay:opacity", (_event, opacity: number) => {
+
+onHost("overlay:opacity", (_event, opacity: number) => {
   update({ opacity });
   save();
 });
-ipcMain.on("overlay:lock", (_event, locked: boolean) => {
+
+onHost("overlay:lock", (_event, locked: boolean) => {
   update({ locked });
   save();
 });
-ipcMain.on("overlay:drag-start", (_event, kind: "move" | "resize") => startDrag(kind));
-ipcMain.on("overlay:drag-end", endDrag);
-ipcMain.on("overlay:hover", () => {
+
+onHost("overlay:drag-start", (_event, kind: "move" | "resize") => startDrag(kind));
+
+onHost("overlay:drag-end", endDrag);
+
+onHost("overlay:hover", () => {
   if (win && !win.isFocused()) rememberForeground(win);
 });
-ipcMain.on("overlay:escape", () => {
+
+onHost("overlay:escape", () => {
   if (!win) return;
   openPanel(null);
   returnFocus(win);
 });
-ipcMain.on("overlay:sent", () => {
+
+onHost("overlay:sent", () => {
   if (!win) return;
   if (state.settings.closeOnSend) openPanel(null);
   returnFocus(win);
 });
-ipcMain.on("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
+
+onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
   update({ settings: { ...state.settings, ...patch } });
   save();
 });
-ipcMain.on("overlay:hooks", (_event, missing: string[]) => {
+
+onHost("overlay:hooks", (_event, missing: string[]) => {
   if (missing.length > 0) console.warn("[t3] layout hooks missing", missing);
   update({ layoutChanged: missing.length > 0 });
 });
 ipcMain.on("guest:client-settings", (event) => {
-  event.returnValue = clientSettings;
+  // The guest preload runs on every page the webview loads; only T3's own page gets the desktop settings.
+  const fromT3 = event.sender.getType() === "webview" && isT3Origin(event.senderFrame?.url);
+  event.returnValue = fromT3 ? clientSettings : null;
 });
 
 // ---------------------------------------------------------------- app
