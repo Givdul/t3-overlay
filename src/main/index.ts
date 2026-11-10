@@ -306,14 +306,19 @@ function configureT3Partition() {
 
     return granted && isT3Origin(requestingOrigin);
   });
-  // The session cookie holds T3's bearer token. Only T3's own page sends it, and only to the T3 server:
-  // not to another loopback port, and not for a page T3 navigated to. Offline, state.origin is null and nothing sends it.
+  // The session cookie holds T3's bearer token. Only T3's own page sends it, and only to a connected T3 server:
+  // not to another loopback port, not for a page T3 navigated to, and not to a port T3 may have left.
   t3.webRequest.onBeforeSendHeaders((details, callback) => {
     const { requestHeaders } = details;
     const target = sessionTarget(details.url);
-    const fromT3 = isT3Origin(details.resourceType === "mainFrame" ? details.url : frameUrl(details.frame));
 
-    if (target === "other port" || (target === "server" && !fromT3)) {
+    // A navigation counts by where it goes, so only a GET: a form another page posts to T3 carries no session.
+    const fromT3 =
+      details.resourceType === "mainFrame"
+        ? details.method === "GET" && isT3Origin(details.url)
+        : isT3Origin(frameUrl(details.frame));
+
+    if (target === "other port" || (target === "server" && !(fromT3 && state.t3 === "connected"))) {
       for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === "cookie") delete requestHeaders[name];
     }
 
