@@ -37,6 +37,23 @@ style.textContent = GUEST_CSS;
 // The preload runs before the document is parsed, so the style waits for <head>.
 window.addEventListener("DOMContentLoaded", () => document.head.append(style));
 
+// The overlay shows its resize grip while the pointer is over the chat. The webview element gets no
+// mouse events of its own in the overlay's page, so the page reports them.
+let pointerInside = false;
+
+const reportPointer = (inside: boolean) => {
+  if (inside === pointerInside) return;
+
+  pointerInside = inside;
+  ipcRenderer.sendToHost("pointer", inside);
+};
+
+window.addEventListener("mouseover", () => reportPointer(true));
+
+window.addEventListener("mouseout", (event) => {
+  if (event.relatedTarget === null) reportPointer(false);
+});
+
 ipcRenderer.on("opacity", (_event, opacity: number) => {
   document.documentElement.style.setProperty("--overlay-opacity", String(opacity));
 });

@@ -73,6 +73,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const route = useRef<string | null>(null);
   const titles = useRef(new Map<string, SidebarThread>());
   const settling = useRef(false);
+  const [pointerInside, setPointerInside] = useState(false);
   // The webview keeps its first URL; later moves go through T3's router so the app never reloads.
   // A new T3 origin (T3 restarted) remounts it.
   const [loaded, setLoaded] = useState<{ origin: string; src: string } | null>(null);
@@ -125,6 +126,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
       if (channel === "escape") window.overlay.escape();
       if (channel === "sent") window.overlay.sent();
       if (channel === "hooks") window.overlay.reportHooks(args[0] as string[]);
+
+      if (channel === "pointer") setPointerInside(args[0] === true);
       if (channel === "route" && !settling.current) {
         const path = args[0] as string;
         route.current = path;
@@ -150,6 +153,11 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   useEffect(() => {
     if (ready) webview.current?.send("opacity", state.opacity);
   }, [ready, state.opacity]);
+
+  // A hidden webview reports no pointer leaving it, so a closed panel forgets the pointer.
+  useEffect(() => {
+    if (state.panel === null) setPointerInside(false);
+  }, [state.panel]);
 
   // "Custom theme" follows the theme picked in the desktop app, live. Needs T3's debugging port.
   const [desktopTheme, setDesktopTheme] = useState<ThemeStorage | null>(null);
@@ -238,7 +246,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
       ? "transition-[opacity,translate] duration-220 ease-out"
       : ""
     : `opacity-0 ${state.side === "left" ? "motion-safe:-translate-x-1.5" : "motion-safe:translate-x-1.5"}`;
-  const corner = state.side === "left" ? "right-0 cursor-nwse-resize" : "left-0 cursor-nesw-resize";
+
+  const corner = state.side === "left" ? "right-0 cursor-nwse-resize" : "left-0 -scale-x-100 cursor-nesw-resize";
 
   return (
     <div className={`flex flex-col ${entrance}`} style={{ ...style, visibility: visible ? "visible" : "hidden" }}>
@@ -268,14 +277,34 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         </div>
       )}
       <div
-        className={`absolute bottom-0 size-4 ${corner}`}
+        className={`group absolute bottom-0 size-4 ${corner}`}
         onMouseDown={(event) => {
           if (event.button !== 0) return;
           window.overlay.dragStart("resize");
           window.addEventListener("mouseup", () => window.overlay.dragEnd(), { once: true });
         }}
-      />
+      >
+        <ResizeGrip shown={pointerInside} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Two diagonal strokes in the bottom-right corner; the corner mirrors them on the left. White with a dark
+ * outline, so they read over any game scenery when the chat background is fully transparent.
+ */
+function ResizeGrip({ shown }: { shown: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className={`size-full text-white drop-shadow-[0_0_1px_rgb(0_0_0/0.9)] motion-safe:transition-opacity motion-safe:duration-150 ${
+        shown ? "opacity-80" : "opacity-0"
+      } group-hover:opacity-100`}
+    >
+      <path d="M13 5 5 13M13 9.5 9.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+    </svg>
   );
 }
 
