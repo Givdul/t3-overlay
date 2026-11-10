@@ -141,7 +141,12 @@ function update(patch: Partial<OverlayState>) {
 function openPanel(target: PanelTarget | null, entrance: PanelEntrance = "slide") {
   if (target !== null && typeof target === "object") persisted.lastThread = target;
   save();
-  update({ panel: target, panelEntrance: entrance, popover: null, unread: state.unread.filter((thread) => !sameThread(target, thread)) });
+  update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
+}
+
+/** A thread is read once the panel shows it. */
+function unreadWithout(panel: PanelTarget | null): ThreadRef[] {
+  return state.unread.filter((thread) => !sameThread(panel, thread));
 }
 
 let lastStates = new Map<string, SidebarThread["state"]>();
@@ -166,6 +171,12 @@ function nextUnread(threads: SidebarThread[]): ThreadRef[] {
 function setThreads(threads: SidebarThread[], source: OverlayState["source"]) {
   // A thread that was working a moment ago and is now completed just finished.
   const finished = threads.find((thread) => thread.state === "completed" && lastStates.get(threadKey(thread)) === "working");
+
+  // Opened before the unread pass, so a thread that opens itself is never drawn unread.
+  if (finished && state.settings.openWhenDone && state.panel === null && win?.isVisible()) {
+    openPanel({ environmentId: finished.environmentId, threadId: finished.threadId });
+  }
+
   const unread = nextUnread(threads);
 
   lastStates = new Map(threads.map((thread) => [threadKey(thread), thread.state]));
@@ -175,10 +186,6 @@ function setThreads(threads: SidebarThread[], source: OverlayState["source"]) {
     threads: threads.filter((thread) => thread.state !== "working" || thread.pinned),
     unread,
   });
-
-  if (finished && state.settings.openWhenDone && state.panel === null && win?.isVisible()) {
-    openPanel({ environmentId: finished.environmentId, threadId: finished.threadId });
-  }
 }
 
 // ---------------------------------------------------------------- T3 connection
@@ -256,7 +263,10 @@ function createWindow() {
   win.on("focus", () => setReducedMotion(false));
   win.on("blur", () => setReducedMotion(true));
   win.on("ready-to-show", () => win?.showInactive());
-  win.on("show", broadcast);
+  win.on("show", () => {
+    state.unread = unreadWithout(state.panel);
+    broadcast();
+  });
   win.on("hide", broadcast);
   layout();
 
