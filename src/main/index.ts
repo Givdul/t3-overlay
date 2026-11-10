@@ -10,6 +10,7 @@ import {
   sameThread,
   slotLeft,
   type Extent,
+  type GuestClientSettings,
   type OverlaySettings,
   type OverlayState,
   type PanelEntrance,
@@ -253,19 +254,15 @@ app.on("web-contents-created", (_event, contents) => {
   });
   if (contents.getType() === "webview") {
     trackMotion(contents);
-    // Electron only consults this once the webview has `allowpopups`, which the panel doesn't set.
+    // The panel never opens app windows. Web links from T3's own page go to the default browser; a page
+    // T3 navigated to can't open browser tabs. Electron only consults this because the panel's webview
+    // sets `allowpopups`. Without it, T3's `window.open` for a system-browser link opens nothing.
     contents.setWindowOpenHandler(({ url }) => {
       const parsed = parseUrl(url);
+      const web = parsed?.protocol === "https:" || parsed?.protocol === "http:";
 
-      if (parsed === null) return { action: "deny" };
+      if (parsed !== null && web && isT3Origin(contents.getURL())) void shell.openExternal(parsed.href);
 
-      // T3 Connect sign-in may pop up auth pages (T3, Clerk, or the identity provider while connecting);
-      // they must share the webview's session. Other web links open in the default browser.
-      if (state.panel === "connect" || /(^|\.)(t3\.codes|clerk\.com|clerk\.accounts\.dev)$/.test(parsed.hostname)) {
-        return { action: "allow", overrideBrowserWindowOptions: { webPreferences: { partition: T3_PARTITION } } };
-      }
-
-      if (parsed.protocol === "https:" || parsed.protocol === "http:") void shell.openExternal(parsed.href);
       return { action: "deny" };
     });
   }
@@ -493,7 +490,9 @@ onHost("overlay:hooks", (_event, missing: string[]) => {
 ipcMain.on("guest:client-settings", (event) => {
   // The guest preload runs on every page the webview loads; only T3's own page gets the desktop settings.
   const fromT3 = event.sender.getType() === "webview" && isT3Origin(event.senderFrame?.url);
-  event.returnValue = fromT3 ? clientSettings : null;
+  const reply: GuestClientSettings = fromT3 ? { settings: clientSettings } : null;
+
+  event.returnValue = reply;
 });
 
 // ---------------------------------------------------------------- app

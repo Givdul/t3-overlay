@@ -111,3 +111,9 @@ export function popoverLeft(state: Pick<OverlayState, "panel" | "panelSize" | "s
 export function sameThread(a: PanelTarget | null, b: ThreadRef): boolean {
   return typeof a === "object" && a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;
 }
+
+/**
+ * Main's answer to the webview preload's "guest:client-settings": null on a page that isn't T3's,
+ * otherwise the desktop settings file's text, or null when it can't be read.
+ */
+export type GuestClientSettings = { settings: string | null } | null;

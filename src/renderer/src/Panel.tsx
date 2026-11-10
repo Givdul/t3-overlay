@@ -9,6 +9,18 @@ interface WebviewElement extends HTMLWebViewElement {
   sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
 }
 
+/**
+ * Attributes passed to the webview element as written. React drops `allowpopups={true}` because it
+ * doesn't know the attribute, and React's typings only accept a boolean for it.
+ */
+interface WebviewAttributes {
+  [attribute: string]: string;
+}
+
+// Without `allowpopups` Electron never calls the main process's window-open handler, so T3's links to
+// the system browser open nothing.
+const POPUPS_ALLOWED: WebviewAttributes = { allowpopups: "" };
+
 interface DidNavigateEvent extends Event {
   url: string;
 }
@@ -235,6 +247,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         ref={webview}
         src={initialSrc}
         partition="persist:t3"
+        {...POPUPS_ALLOWED}
         className={`min-h-0 flex-1 ${unreachable ? "invisible" : ""}`}
       />
       {unreachable && (
