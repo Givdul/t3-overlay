@@ -47,7 +47,13 @@ const tokenPath = () => join(app.getPath("userData"), "t3-session.bin");
 
 async function loadToken(): Promise<string | null> {
   if (!existsSync(tokenPath())) return null;
-  return (await safeStorage.decryptStringAsync(await readFile(tokenPath()))).result;
+
+  // A corrupt file, or one sealed by another keychain, would otherwise fail every reconnect. A fresh token replaces it.
+  try {
+    return (await safeStorage.decryptStringAsync(await readFile(tokenPath()))).result;
+  } catch {
+    return null;
+  }
 }
 
 function mintToken(): Promise<string> {
@@ -77,8 +83,36 @@ async function authSession(server: T3Server, token: string): Promise<AuthSession
   return (await response.json()) as AuthSession;
 }
 
-/** Returns a working bearer token and installs it as the session cookie of the T3 webview partition. */
-export async function ensureSession(server: T3Server, forceMint = false): Promise<string> {
+/** The server the session cookie was last installed for. It stays set while that server is down. */
+let cookieServer: URL | null = null;
+
+/**
+ * Cookies ignore ports, so the session cookie also rides on requests to every other listener on the
+ * T3 server's host. Whether `url` is one of them.
+ */
+export function isOtherPortOfSessionHost(url: string): boolean {
+  if (cookieServer === null || !URL.canParse(url)) return false;
+
+  const target = new URL(url);
+
+  return target.hostname === cookieServer.hostname && target.port !== cookieServer.port;
+}
+
+let pendingSession: Promise<string> | null = null;
+
+/**
+ * Returns a working bearer token and installs it as the session cookie of the T3 webview partition.
+ * Concurrent callers share one attempt, so a reconnect racing an expiry mints one token, not two.
+ */
+export function ensureSession(server: T3Server, forceMint = false): Promise<string> {
+  pendingSession ??= establishSession(server, forceMint).finally(() => {
+    pendingSession = null;
+  });
+
+  return pendingSession;
+}
+
+async function establishSession(server: T3Server, forceMint: boolean): Promise<string> {
   let token = forceMint ? null : await loadToken();
   let current = token === null ? null : await authSession(server, token);
   if (token === null || current === null || !current.authenticated) {
@@ -97,6 +131,8 @@ export async function ensureSession(server: T3Server, forceMint = false): Promis
     sameSite: "lax",
     expirationDate: Date.now() / 1000 + 90 * 24 * 3600,
   });
+  cookieServer = new URL(server.origin);
+
   return token;
 }
 

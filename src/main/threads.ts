@@ -26,21 +26,27 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
   let stopped = false;
 
   void (async () => {
-    const descriptor = (await (await fetch(`${options.server.origin}/.well-known/t3/environment`)).json()) as {
-      environmentId: string;
-      label?: string;
-    };
-    const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
     try {
+      // SAFETY: T3's environment descriptor always names its environmentId; label is optional.
+      const descriptor = (await (await fetch(`${options.server.origin}/.well-known/t3/environment`)).json()) as {
+        environmentId: string;
+        label?: string;
+      };
+
+      const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
+
       stopStream = await openShellStream(options.server, options.token, {
         onValue: (value) => {
-          if (model.apply(value) && model.hasSnapshot) options.onThreads(sortSidebar(model.sidebar()), "local");
+          if (!stopped && model.apply(value) && model.hasSnapshot) options.onThreads(sortSidebar(model.sidebar()), "local");
         },
         onClose: (reason) => {
           console.warn("[t3] shell stream closed:", reason);
           if (!stopped) options.onLost();
         },
       });
+
+      // Stopped while the stream was opening.
+      if (stopped) stopStream();
     } catch (error) {
       if (error instanceof AuthExpiredError) options.onAuthExpired();
       else console.error("[t3] shell stream failed", error);

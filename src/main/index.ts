@@ -21,7 +21,14 @@ import {
 import type { ThemeStorage } from "../shared/theme";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureSession, readDesktopClientSettings, readServer, T3_PARTITION, type T3Server } from "./t3";
+import {
+  ensureSession,
+  isOtherPortOfSessionHost,
+  readDesktopClientSettings,
+  readServer,
+  T3_PARTITION,
+  type T3Server,
+} from "./t3";
 import { startThreadFeed, type ThreadFeed } from "./threads";
 import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
@@ -289,6 +296,16 @@ function configureT3Partition() {
     const granted = (permission === "media" && details.mediaType !== "video") || permission.startsWith("clipboard");
 
     return granted && isT3Origin(requestingOrigin);
+  });
+  // The session cookie holds T3's bearer token. Only the T3 server gets it, not another loopback port the page reaches.
+  t3.webRequest.onBeforeSendHeaders((details, callback) => {
+    const { requestHeaders } = details;
+
+    if (isOtherPortOfSessionHost(details.url)) {
+      for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === "cookie") delete requestHeaders[name];
+    }
+
+    callback({ requestHeaders });
   });
 }
 

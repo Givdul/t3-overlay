@@ -5,6 +5,7 @@ import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../
 interface WebviewElement extends HTMLWebViewElement {
   executeJavaScript(code: string): Promise<unknown>;
   getURL(): string;
+  src: string;
   send(channel: string, ...args: unknown[]): void;
   sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
 }
@@ -27,6 +28,12 @@ function routeFor(target: PanelTarget, signInFirst = false): string {
   if (target === "connect") return signInFirst ? "/" : "/settings/connections";
   return `/${encodeURIComponent(target.environmentId)}/${encodeURIComponent(target.threadId)}`;
 }
+
+const sameOrigin = (url: string, origin: string) =>
+  URL.canParse(url) && URL.canParse(origin) && new URL(url).origin === new URL(origin).origin;
+
+/** Whether the webview still shows the T3 origin it was loaded on, not a page T3 navigated to. */
+const showsT3 = (element: WebviewElement) => sameOrigin(element.getURL(), element.src);
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -75,7 +82,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   }
 
   const navigate = async (path: string) => {
-    if (!webview.current || route.current === path) return;
+    if (!webview.current || route.current === path || !showsT3(webview.current)) return;
     route.current = path;
     await webview.current.executeJavaScript(`history.pushState(null, "", ${JSON.stringify(path)})`);
   };
@@ -85,8 +92,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
     if (!element || initialSrc === null) return;
     // The thread title, theme and page scripts go only to T3's own page, not to a page it navigated to.
-    const t3Origin = new URL(initialSrc).origin;
-    const onT3 = (url: string) => URL.canParse(url) && new URL(url).origin === t3Origin;
+    const onT3 = (url: string) => sameOrigin(url, initialSrc);
     const onReady = () => {
       setReady(onT3(element.getURL()));
 
@@ -180,6 +186,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         try {
           await navigate(routeFor(thread));
           await wait(500);
+
+          if (!showsT3(element)) return;
           element.sendInputEvent({ type: "keyDown", keyCode: "S", modifiers: ["control", "shift"] });
           element.sendInputEvent({ type: "keyUp", keyCode: "S", modifiers: ["control", "shift"] });
           await wait(300);
