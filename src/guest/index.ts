@@ -32,6 +32,40 @@ if (reply !== null) {
 // T3's own thread sidebar stays collapsed; the overlay has its own.
 localStorage.setItem("chat_thread_sidebar_open", "false");
 
+// T3's thread toasts never show in the panel, whatever T3's notification settings say: the overlay's sidebar
+// shows those states. CSS can't match a toast's title, so a toast is marked hidden (style.ts) as it mounts,
+// before it paints, then dismissed so it leaves T3's toast stack.
+// These are the titles of T3's thread notification toasts. When T3 renames one, update it here.
+const THREAD_TOAST_TITLES = new Set([
+  "Thread completed",
+  "Approval needed",
+  "Usage limit reached",
+  "Thread failed",
+  "Guest request",
+  "Input needed",
+]);
+
+const TOAST = '[data-slot="toast-popup"]';
+
+function hideThreadToast(toast: Element) {
+  const title = toast.querySelector('[data-slot="toast-title"]')?.textContent?.trim() ?? "";
+
+  if (!THREAD_TOAST_TITLES.has(title) || toast.hasAttribute("data-overlay-hidden")) return;
+  toast.setAttribute("data-overlay-hidden", "");
+  toast.querySelector<HTMLElement>('[data-slot="toast-close"]')?.click();
+}
+
+new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    for (const node of mutation.addedNodes) {
+      if (!(node instanceof Element)) continue;
+
+      if (node.matches(TOAST)) hideThreadToast(node);
+      else node.querySelectorAll(TOAST).forEach(hideThreadToast);
+    }
+  }
+}).observe(document, { childList: true, subtree: true });
+
 const style = document.createElement("style");
 style.textContent = GUEST_CSS;
 // The preload runs before the document is parsed, so the style waits for <head>.
