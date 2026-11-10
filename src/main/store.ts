@@ -62,5 +62,20 @@ export function savePersisted(value: Persisted) {
 export function loadConfig(): Config {
   if (!existsSync(configPath())) writeFileSync(configPath(), JSON.stringify(DEFAULT_CONFIG, null, 2));
   const config = readJson(configPath(), DEFAULT_CONFIG);
-  return { ...config, hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys } };
+
+  return {
+    hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys },
+    debugPort: Number.isInteger(config.debugPort) && config.debugPort > 0 && config.debugPort < 65536 ? config.debugPort : DEFAULT_CONFIG.debugPort,
+    panelOrigin: panelOrigin(config.panelOrigin),
+  };
+}
+
+/** "local", or the origin of an HTTPS URL. Anything else falls back to the hosted app. */
+function panelOrigin(value: string): string {
+  if (value === "local") return value;
+
+  if (!URL.canParse(value)) return DEFAULT_CONFIG.panelOrigin;
+  const url = new URL(value);
+
+  return url.protocol === "https:" ? url.origin : DEFAULT_CONFIG.panelOrigin;
 }

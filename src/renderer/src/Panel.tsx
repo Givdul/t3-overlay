@@ -4,8 +4,13 @@ import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../
 
 interface WebviewElement extends HTMLWebViewElement {
   executeJavaScript(code: string): Promise<unknown>;
+  getURL(): string;
   send(channel: string, ...args: unknown[]): void;
   sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
+}
+
+interface DidNavigateEvent extends Event {
+  url: string;
 }
 
 interface IpcMessageEvent extends Event {
@@ -77,13 +82,25 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
   useEffect(() => {
     const element = webview.current;
-    if (!element) return;
+
+    if (!element || initialSrc === null) return;
+    // The thread title, theme and page scripts go only to T3's own page, not to a page it navigated to.
+    const t3Origin = new URL(initialSrc).origin;
+    const onT3 = (url: string) => URL.canParse(url) && new URL(url).origin === t3Origin;
     const onReady = () => {
-      setReady(true);
-      element.send("opacity", state.opacity);
+      setReady(onT3(element.getURL()));
+
+      if (onT3(element.getURL())) element.send("opacity", state.opacity);
+    };
+
+    const onNavigate = (event: Event) => {
+      // SAFETY: Electron fires did-navigate on a <webview> with the new top-level URL.
+      if (!onT3((event as DidNavigateEvent).url)) setReady(false);
     };
     const onMessage = (event: Event) => {
       const { channel, args } = event as IpcMessageEvent;
+
+      if (!onT3(element.getURL())) return;
       if (channel === "escape") window.overlay.escape();
       if (channel === "sent") window.overlay.sent();
       if (channel === "hooks") window.overlay.reportHooks(args[0] as string[]);
@@ -100,9 +117,11 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
       }
     };
     element.addEventListener("dom-ready", onReady);
+    element.addEventListener("did-navigate", onNavigate);
     element.addEventListener("ipc-message", onMessage);
     return () => {
       element.removeEventListener("dom-ready", onReady);
+      element.removeEventListener("did-navigate", onNavigate);
       element.removeEventListener("ipc-message", onMessage);
     };
   }, [initialSrc]);

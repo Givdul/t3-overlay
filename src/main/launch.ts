@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { dialog } from "electron";
+import { isAlive } from "./t3";
 
 function findT3Executable(): string | null {
   if (process.platform !== "win32") return null;
@@ -33,15 +34,6 @@ function parentPid(pid: number): Promise<number | null> {
   });
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Asks T3 to quit, waits for it to exit, then starts it again with the debugging port. */
 export async function restartT3WithDebugPort(port: number) {
   const { response } = await dialog.showMessageBox({
@@ -54,6 +46,8 @@ export async function restartT3WithDebugPort(port: number) {
   if (response !== 0) return;
 
   const runtime = JSON.parse(await readFile(join(homedir(), ".t3", "userdata", "server-runtime.json"), "utf8"));
+
+  if (!isAlive(runtime.pid)) return;
   const main = await parentPid(runtime.pid);
   if (main === null) return;
   // taskkill without /F sends WM_CLOSE, so T3 shuts down its server cleanly.

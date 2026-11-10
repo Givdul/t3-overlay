@@ -61,7 +61,9 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     return null;
   }
   const page = targets.find((target) => target.type === "page" && /^t3code(-dev)?:\/\/app/.test(target.url));
-  if (!page) return null;
+
+  // Only T3's own debugger on this port; a listing could point the socket anywhere.
+  if (!page || !page.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${options.port}/`)) return null;
 
   const socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {

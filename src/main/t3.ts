@@ -15,9 +15,26 @@ export interface T3Server {
   serverVersion: string;
 }
 
+/** Whether `pid` is a running process this user may signal. Another user's process counts as not running. */
+export function isAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function readServer(): Promise<T3Server | null> {
   try {
     const raw = JSON.parse(await readFile(join(T3_HOME, "userdata", "server-runtime.json"), "utf8"));
+
+    // The file outlives the server. Without a live server process, whatever answers on its old port
+    // would receive the session token.
+    if (!isAlive(raw.pid)) return null;
     const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
     if (!response.ok) return null;
     return { origin: raw.origin, port: raw.port, serverVersion: raw.serverVersion };
@@ -68,7 +85,9 @@ export async function ensureSession(server: T3Server, forceMint = false): Promis
     token = await mintToken();
     current = await authSession(server, token);
     if (!current.authenticated) throw new Error("T3 rejected a freshly minted session token");
-    await writeFile(tokenPath(), await safeStorage.encryptStringAsync(token));
+
+    // Without an OS keychain the token lives only in memory, and the next start mints another.
+    if (safeStorage.isEncryptionAvailable()) await writeFile(tokenPath(), await safeStorage.encryptStringAsync(token));
   }
   await session.fromPartition(T3_PARTITION).cookies.set({
     url: server.origin,

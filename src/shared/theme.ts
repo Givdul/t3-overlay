@@ -19,6 +19,7 @@ export function defaultThemeStorage(storage: ThemeStorage | null): ThemeStorage 
  * "applied" markers, so an environment's default theme never lands on the panel unasked.
  */
 export function themeApplyScript(storage: ThemeStorage): string {
+  const next = Object.fromEntries(Object.entries(storage).filter(([key]) => THEME_STORAGE_KEY.test(key)));
   return `((next) => {
   const isTheme = (key) => ${THEME_STORAGE_KEY.toString()}.test(key) && !${APPLIED_MARKER_KEY.toString()}.test(key);
   const changes = [];
@@ -35,5 +36,5 @@ export function themeApplyScript(storage: ThemeStorage): string {
     window.dispatchEvent(new StorageEvent("storage", { key, oldValue, newValue, storageArea: localStorage, url: location.href }));
   }
   return changes.length;
-})(${JSON.stringify(storage)})`;
+})(${JSON.stringify(next)})`;
 }
