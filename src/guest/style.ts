@@ -35,7 +35,8 @@ html[data-overlay-route="thread"]:not([data-overlay-composer-folded]) {
 [data-right-panel-surface-content],
 [data-right-panel-toggle],
 [data-thread-details-panel],
-[data-preview-mini-player] {
+[data-preview-mini-player],
+[data-slot="toast-popup"][data-overlay-hidden] {
   display: none !important;
 }
 
