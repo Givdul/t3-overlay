@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import type { OverlayState } from "../../shared/types";
+import { TEXT_OUTLINES, type OverlayState, type TextOutline } from "../../shared/types";
 import { ProjectGlyph } from "./ThreadIcon";
 
 /** A popover's card. It reports its height, so the window's shape ends where the card does. */
@@ -74,6 +74,30 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   );
 }
 
+const OUTLINE_LABELS: Record<TextOutline, string> = { off: "Off", thin: "Thin", thick: "Thick" };
+
+function OutlinePicker({ value, onChange }: { value: TextOutline; onChange: (value: TextOutline) => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-[13px]">
+      <span id="text-outline-label">Text outline</span>
+      <div role="radiogroup" aria-labelledby="text-outline-label" className="flex shrink-0 rounded-full bg-white/15 p-0.5">
+        {TEXT_OUTLINES.map((outline) => (
+          <button
+            key={outline}
+            type="button"
+            role="radio"
+            aria-checked={value === outline}
+            className="rounded-full px-2 text-[11px] leading-[14px] text-t3-muted transition-colors hover:text-t3-fg aria-checked:bg-sky-400 aria-checked:text-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            onClick={() => onChange(outline)}
+          >
+            {OUTLINE_LABELS[outline]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPopover({ state, style }: { state: OverlayState; style: CSSProperties }) {
   const { settings } = state;
   return (
@@ -84,11 +108,7 @@ export function SettingsPopover({ state, style }: { state: OverlayState; style: 
         checked={settings.titleInComposer}
         onChange={(titleInComposer) => window.overlay.setSettings({ titleInComposer })}
       />
-      <Toggle
-        label="Text outline"
-        checked={settings.textOutline}
-        onChange={(textOutline) => window.overlay.setSettings({ textOutline })}
-      />
+      <OutlinePicker value={settings.textOutline} onChange={(textOutline) => window.overlay.setSettings({ textOutline })} />
       <Toggle
         label="Compact composer"
         checked={settings.compactComposer}

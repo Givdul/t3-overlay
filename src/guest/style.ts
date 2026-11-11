@@ -131,10 +131,20 @@ html[data-overlay-route="thread"] [data-chat-composer-overlay] > div {
 }
 
 /* "Text outline": a dark outline like WoW's chat, for reading over bright scenery. */
-html[data-overlay-outline] [data-workspace-area="conversation"],
-html[data-overlay-outline] [data-chat-canvas]::before,
-html[data-overlay-outline] [data-slot="composer-shell"]::after {
+html[data-overlay-outline="thin"] [data-workspace-area="conversation"],
+html[data-overlay-outline="thin"] [data-chat-canvas]::before,
+html[data-overlay-outline="thin"] [data-slot="composer-shell"]::after {
   text-shadow: 0 0 2px #000, 0 0 3px #000, 1px 1px 1px #000;
+}
+
+/* "Thick": WoW's thick outline. Eight hard offsets ring each glyph; the blur fills the gaps between them. */
+html[data-overlay-outline="thick"] [data-workspace-area="conversation"],
+html[data-overlay-outline="thick"] [data-chat-canvas]::before,
+html[data-overlay-outline="thick"] [data-slot="composer-shell"]::after {
+  text-shadow:
+    -1.5px -1.5px 0 #000, 0 -1.5px 0 #000, 1.5px -1.5px 0 #000, 1.5px 0 0 #000,
+    1.5px 1.5px 0 #000, 0 1.5px 0 #000, -1.5px 1.5px 0 #000, -1.5px 0 0 #000,
+    0 0 3px #000;
 }
 
 /* "Title in composer": the title becomes the card's first row, using the shell's unused ::after.

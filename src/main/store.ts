@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
-import { DEFAULT_SETTINGS, type OverlaySettings, type ThreadRef } from "../shared/types";
+import { DEFAULT_SETTINGS, TEXT_OUTLINES, type OverlaySettings, type TextOutline, type ThreadRef } from "../shared/types";
 
 export interface Persisted {
   /** Sidebar top-left in screen DIPs, tied to the display it was placed on. */
@@ -52,7 +52,18 @@ function readJson<T extends object>(path: string, fallback: T): T {
 
 export function loadPersisted(): Persisted {
   const persisted = readJson(statePath(), DEFAULT_PERSISTED);
-  return { ...persisted, settings: { ...DEFAULT_SETTINGS, ...persisted.settings } };
+  const settings = { ...DEFAULT_SETTINGS, ...persisted.settings };
+
+  return { ...persisted, settings: { ...settings, textOutline: textOutline(settings.textOutline) } };
+}
+
+/** Before "Thick" existed, the outline was a boolean: true was today's "thin". */
+type StoredTextOutline = TextOutline | boolean;
+
+function textOutline(value: StoredTextOutline): TextOutline {
+  if (value === true) return "thin";
+
+  return TEXT_OUTLINES.find((outline) => outline === value) ?? DEFAULT_SETTINGS.textOutline;
 }
 
 export function savePersisted(value: Persisted) {
