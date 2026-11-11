@@ -117,8 +117,9 @@ ipcRenderer.on("chrome", (_event, next: Chrome) => {
 
 const OPEN_POPOVER = '[role="listbox"], [role="menu"], [role="dialog"]';
 const COMPOSER_FORM = '[data-chat-composer-form="true"]';
+// T3 sets its editor to contenteditable="false" while dictating, so the editor is found by its test id.
 const composerText = () =>
-  document.querySelector(`${COMPOSER_FORM} [contenteditable="true"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
+  document.querySelector(`${COMPOSER_FORM} [data-testid="composer-editor"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
 
 // Compact composer: an empty composer without focus folds into a write button below the history.
 // Focus moving in only unfolds. Focus leaving, a route change, or new settings re-check the fold.
@@ -158,11 +159,13 @@ window.addEventListener(
 window.addEventListener(
   "keydown",
   (event) => {
-    if (event.key === "Escape") stopWatchingDictatedSend();
+    // With a popover open, Escape closes the popover, not voice input, and a pending dictated send survives.
     if (event.key === "Escape" && document.querySelector(OPEN_POPOVER) === null) {
+      stopWatchingDictatedSend();
       ipcRenderer.sendToHost("escape");
     }
-    if (event.key === "Enter" && !event.shiftKey && inComposer(event.target)) watchForSend();
+
+    if (event.key === "Enter" && !event.shiftKey && sendsFromKey(event.target)) watchForSend();
   },
   true,
 );
@@ -172,6 +175,11 @@ window.addEventListener("submit", (event) => {
 
 function inComposer(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(COMPOSER_FORM) !== null;
+}
+
+// T3's composer also takes keys aimed at the page itself, where focus lands while dictation freezes the editor.
+function sendsFromKey(target: EventTarget | null): boolean {
+  return inComposer(target) || target === document.body || target === document.documentElement;
 }
 
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
@@ -184,9 +192,9 @@ function watchForSend() {
   }, 250);
 }
 
-// While dictating, the composer stays empty (T3 shows the live transcript in its own box). Sending then
-// waits for the transcription: T3 writes the transcript into the composer, sends it, and clears it.
-// T3 labels its voice controls; nothing else marks the dictation phase.
+// While dictating, T3 shows the live transcript in its own box and leaves the composer's text alone. Sending
+// then waits for the transcription: T3 adds the transcript to the composer, sends it, and clears it.
+// T3 labels its voice controls; nothing else marks the dictation phase. When T3 renames one, update it here.
 const voiceActive = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Cancel voice input"]`) !== null;
 
 const voiceFailed = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Dismiss voice input error"]`) !== null;
@@ -232,7 +240,7 @@ function watchForDictatedSend() {
   dictatedSend.observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 
-// Cancelling voice input drops the pending send and leaves the composer as empty as a send would.
+// Cancelling voice input drops T3's pending send. An empty composer then looks the same as after a send.
 window.addEventListener(
   "click",
   (event) => {
