@@ -58,6 +58,10 @@ export interface OverlayState {
   hotkeyFailed: string[];
 }
 
+export const TEXT_OUTLINES = ["off", "thin", "thick"] as const;
+
+export type TextOutline = (typeof TEXT_OUTLINES)[number];
+
 export interface OverlaySettings {
   /** Thread title as the first row of the composer card instead of above the chat history. */
   titleInComposer: boolean;
@@ -66,7 +70,7 @@ export interface OverlaySettings {
   /** Open a thread when it finishes, if no panel is open. */
   openWhenDone: boolean;
   /** Dark outline on chat text, like WoW's chat, for reading over bright scenery. */
-  textOutline: boolean;
+  textOutline: TextOutline;
   /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
   compactComposer: boolean;
   /** The theme picked in the desktop app. Off shows T3's default theme, following the system appearance. */
@@ -77,7 +81,7 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   titleInComposer: false,
   closeOnSend: false,
   openWhenDone: false,
-  textOutline: false,
+  textOutline: "off",
   compactComposer: true,
   customTheme: true,
 };

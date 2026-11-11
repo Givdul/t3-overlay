@@ -1,6 +1,6 @@
 // Preload for the T3 webview. Runs in an isolated world inside T3's own web UI.
 import { ipcRenderer } from "electron";
-import type { GuestClientSettings } from "../shared/types";
+import type { GuestClientSettings, TextOutline } from "../shared/types";
 import { GUEST_CSS, REQUIRED_HOOKS } from "./style";
 
 const CLIENT_SETTINGS_KEY = "t3code:client-settings:v1";
@@ -94,7 +94,7 @@ ipcRenderer.on("opacity", (_event, opacity: number) => {
 interface Chrome {
   title: string;
   titleInComposer: boolean;
-  textOutline: boolean;
+  textOutline: TextOutline;
   compactComposer: boolean;
   /** The thread waits on an approval or an answer. */
   needsReply: boolean;
@@ -110,7 +110,7 @@ ipcRenderer.on("chrome", (_event, next: Chrome) => {
   // JSON string syntax is valid CSS string syntax for the characters a thread title holds.
   root.style.setProperty("--overlay-title", JSON.stringify(next.title));
   root.dataset.overlayTitle = next.titleInComposer ? "composer" : "chat";
-  root.toggleAttribute("data-overlay-outline", next.textOutline);
+  root.dataset.overlayOutline = next.textOutline;
   root.dataset.overlaySide = next.side;
   foldComposer();
 });
