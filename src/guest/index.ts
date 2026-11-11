@@ -159,9 +159,10 @@ window.addEventListener(
 window.addEventListener(
   "keydown",
   (event) => {
-    // With a popover open, Escape closes the popover, not voice input, and a pending dictated send survives.
+    // T3 cancels voice input on Escape, popover or not, which drops its pending send.
+    if (event.key === "Escape") stopWatchingDictatedSend();
+
     if (event.key === "Escape" && document.querySelector(OPEN_POPOVER) === null) {
-      stopWatchingDictatedSend();
       ipcRenderer.sendToHost("escape");
     }
 
@@ -177,9 +178,11 @@ function inComposer(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(COMPOSER_FORM) !== null;
 }
 
-// T3's composer also takes keys aimed at the page itself, where focus lands while dictation freezes the editor.
+// While dictation freezes the editor, focus can land on the page itself, and T3's composer takes those keys too.
 function sendsFromKey(target: EventTarget | null): boolean {
-  return inComposer(target) || target === document.body || target === document.documentElement;
+  const onPage = target === document.body || target === document.documentElement;
+
+  return inComposer(target) || (onPage && voiceActive());
 }
 
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
@@ -195,7 +198,9 @@ function watchForSend() {
 // While dictating, T3 shows the live transcript in its own box and leaves the composer's text alone. Sending
 // then waits for the transcription: T3 adds the transcript to the composer, sends it, and clears it.
 // T3 labels its voice controls; nothing else marks the dictation phase. When T3 renames one, update it here.
-const voiceActive = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Cancel voice input"]`) !== null;
+const CANCEL_VOICE = '[aria-label="Cancel voice input"]';
+
+const voiceActive = () => document.querySelector(`${COMPOSER_FORM} ${CANCEL_VOICE}`) !== null;
 
 const voiceFailed = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Dismiss voice input error"]`) !== null;
 
@@ -214,29 +219,32 @@ function stopWatchingDictatedSend() {
   dictatedSendGrace = null;
 }
 
+let sawDictatedText = false;
+
+function checkDictatedSend() {
+  const hasText = composerText() !== "";
+
+  sawDictatedText ||= hasText;
+
+  if (voiceActive()) return;
+
+  if (voiceFailed()) return stopWatchingDictatedSend();
+
+  if (sawDictatedText && !hasText) {
+    stopWatchingDictatedSend();
+    ipcRenderer.sendToHost("sent");
+
+    return;
+  }
+
+  dictatedSendGrace ??= setTimeout(stopWatchingDictatedSend, DICTATED_SEND_GRACE_MS);
+}
+
 // Watches every DOM change, not a timer: the transcript can be in the composer for less than a frame.
 function watchForDictatedSend() {
   stopWatchingDictatedSend();
-  let sawText = composerText() !== "";
-
-  dictatedSend = new MutationObserver(() => {
-    const hasText = composerText() !== "";
-
-    sawText ||= hasText;
-
-    if (voiceActive()) return;
-
-    if (voiceFailed()) return stopWatchingDictatedSend();
-
-    if (sawText && !hasText) {
-      stopWatchingDictatedSend();
-      ipcRenderer.sendToHost("sent");
-
-      return;
-    }
-
-    dictatedSendGrace ??= setTimeout(stopWatchingDictatedSend, DICTATED_SEND_GRACE_MS);
-  });
+  sawDictatedText = composerText() !== "";
+  dictatedSend = new MutationObserver(checkDictatedSend);
   dictatedSend.observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 
@@ -244,7 +252,7 @@ function watchForDictatedSend() {
 window.addEventListener(
   "click",
   (event) => {
-    if (event.target instanceof Element && event.target.closest('[aria-label="Cancel voice input"]')) stopWatchingDictatedSend();
+    if (event.target instanceof Element && event.target.closest(CANCEL_VOICE)) stopWatchingDictatedSend();
   },
   true,
 );
@@ -260,6 +268,10 @@ window.addEventListener("DOMContentLoaded", markRoute);
 
 const navigation = (window as unknown as { navigation?: EventTarget }).navigation;
 navigation?.addEventListener("currententrychange", () => {
+  // Leaving the thread cancels its dictation, and the next thread's empty composer is not a send. A draft's
+  // first send clears the composer and then navigates to the new thread, so the cleared composer counts first.
+  if (dictatedSend !== null) checkDictatedSend();
+  stopWatchingDictatedSend();
   markRoute();
   ipcRenderer.sendToHost("route", location.pathname);
   // The next thread's draft text renders a moment after the route changes.
