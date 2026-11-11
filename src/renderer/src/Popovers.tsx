@@ -87,7 +87,7 @@ function OutlinePicker({ value, onChange }: { value: TextOutline; onChange: (val
             type="button"
             role="radio"
             aria-checked={value === outline}
-            className="rounded-full px-2 text-[11px] leading-[14px] text-t3-muted transition-colors hover:text-t3-fg aria-checked:bg-sky-400 aria-checked:text-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            className="cursor-pointer rounded-full px-2 text-[11px] leading-[14px] text-t3-muted transition-colors hover:text-t3-fg aria-checked:bg-sky-400 aria-checked:text-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
             onClick={() => onChange(outline)}
           >
             {OUTLINE_LABELS[outline]}

@@ -54,13 +54,13 @@ export function loadPersisted(): Persisted {
   const persisted = readJson(statePath(), DEFAULT_PERSISTED);
   const settings = { ...DEFAULT_SETTINGS, ...persisted.settings };
 
-  return { ...persisted, settings: { ...settings, textOutline: textOutline(settings.textOutline) } };
+  return { ...persisted, settings: { ...settings, textOutline: parseTextOutline(settings.textOutline) } };
 }
 
 /** Before "Thick" existed, the outline was a boolean: true was today's "thin". */
 type StoredTextOutline = TextOutline | boolean;
 
-function textOutline(value: StoredTextOutline): TextOutline {
+function parseTextOutline(value: StoredTextOutline): TextOutline {
   if (value === true) return "thin";
 
   return TEXT_OUTLINES.find((outline) => outline === value) ?? DEFAULT_SETTINGS.textOutline;
