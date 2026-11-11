@@ -117,8 +117,9 @@ ipcRenderer.on("chrome", (_event, next: Chrome) => {
 
 const OPEN_POPOVER = '[role="listbox"], [role="menu"], [role="dialog"]';
 const COMPOSER_FORM = '[data-chat-composer-form="true"]';
+// T3 sets its editor to contenteditable="false" while dictating, so the editor is found by its test id.
 const composerText = () =>
-  document.querySelector(`${COMPOSER_FORM} [contenteditable="true"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
+  document.querySelector(`${COMPOSER_FORM} [data-testid="composer-editor"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
 
 // Compact composer: an empty composer without focus folds into a write button below the history.
 // Focus moving in only unfolds. Focus leaving, a route change, or new settings re-check the fold.
@@ -158,10 +159,14 @@ window.addEventListener(
 window.addEventListener(
   "keydown",
   (event) => {
+    // T3 cancels voice input on Escape, popover or not, which drops its pending send.
+    if (event.key === "Escape") stopWatchingDictatedSend();
+
     if (event.key === "Escape" && document.querySelector(OPEN_POPOVER) === null) {
       ipcRenderer.sendToHost("escape");
     }
-    if (event.key === "Enter" && !event.shiftKey && inComposer(event.target)) watchForSend();
+
+    if (event.key === "Enter" && !event.shiftKey && sendsFromKey(event.target)) watchForSend();
   },
   true,
 );
@@ -173,14 +178,84 @@ function inComposer(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(COMPOSER_FORM) !== null;
 }
 
+// While dictation freezes the editor, focus can land on the page itself, and T3's composer takes those keys too.
+function sendsFromKey(target: EventTarget | null): boolean {
+  const onPage = target === document.body || target === document.documentElement;
+
+  return inComposer(target) || (onPage && voiceActive());
+}
+
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
 // A send is the composer going from text to empty right after Enter or the send button.
 function watchForSend() {
+  if (voiceActive()) return watchForDictatedSend();
   if (composerText() === "") return;
   setTimeout(() => {
     if (composerText() === "") ipcRenderer.sendToHost("sent");
   }, 250);
 }
+
+// While dictating, T3 shows the live transcript in its own box and leaves the composer's text alone. Sending
+// then waits for the transcription: T3 adds the transcript to the composer, sends it, and clears it.
+// T3 labels its voice controls; nothing else marks the dictation phase. When T3 renames one, update it here.
+const CANCEL_VOICE = '[aria-label="Cancel voice input"]';
+
+const voiceActive = () => document.querySelector(`${COMPOSER_FORM} ${CANCEL_VOICE}`) !== null;
+
+const voiceFailed = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Dismiss voice input error"]`) !== null;
+
+/** How long after dictation ends the transcript has to land in the composer and be sent. */
+const DICTATED_SEND_GRACE_MS = 2000;
+
+let dictatedSend: MutationObserver | null = null;
+
+let dictatedSendGrace: ReturnType<typeof setTimeout> | null = null;
+
+function stopWatchingDictatedSend() {
+  dictatedSend?.disconnect();
+  dictatedSend = null;
+
+  if (dictatedSendGrace !== null) clearTimeout(dictatedSendGrace);
+  dictatedSendGrace = null;
+}
+
+let sawDictatedText = false;
+
+function checkDictatedSend() {
+  const hasText = composerText() !== "";
+
+  sawDictatedText ||= hasText;
+
+  if (voiceActive()) return;
+
+  if (voiceFailed()) return stopWatchingDictatedSend();
+
+  if (sawDictatedText && !hasText) {
+    stopWatchingDictatedSend();
+    ipcRenderer.sendToHost("sent");
+
+    return;
+  }
+
+  dictatedSendGrace ??= setTimeout(stopWatchingDictatedSend, DICTATED_SEND_GRACE_MS);
+}
+
+// Watches every DOM change, not a timer: the transcript can be in the composer for less than a frame.
+function watchForDictatedSend() {
+  stopWatchingDictatedSend();
+  sawDictatedText = composerText() !== "";
+  dictatedSend = new MutationObserver(checkDictatedSend);
+  dictatedSend.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+// Cancelling voice input drops T3's pending send. An empty composer then looks the same as after a send.
+window.addEventListener(
+  "click",
+  (event) => {
+    if (event.target instanceof Element && event.target.closest(CANCEL_VOICE)) stopWatchingDictatedSend();
+  },
+  true,
+);
 
 // Tells the overlay where T3 went on its own, such as a draft turning into a thread after the first send.
 const isThreadRoute = () => /^\/[^/]+\/[^/]+$/.test(location.pathname) && !/^\/(draft|settings)\//.test(location.pathname);
@@ -193,6 +268,10 @@ window.addEventListener("DOMContentLoaded", markRoute);
 
 const navigation = (window as unknown as { navigation?: EventTarget }).navigation;
 navigation?.addEventListener("currententrychange", () => {
+  // Leaving the thread cancels its dictation, and the next thread's empty composer is not a send. A draft's
+  // first send clears the composer and then navigates to the new thread, so the cleared composer counts first.
+  if (dictatedSend !== null) checkDictatedSend();
+  stopWatchingDictatedSend();
   markRoute();
   ipcRenderer.sendToHost("route", location.pathname);
   // The next thread's draft text renders a moment after the route changes.
