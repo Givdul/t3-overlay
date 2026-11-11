@@ -64,11 +64,14 @@ const ATTENTION_BADGES = {
   failed: { color: "text-red-400", title: undefined, Icon: X },
 } as const;
 
-/** An unread badge is filled and blinks a few times as it arrives; once opened it is an outline. */
+/**
+ * An unread badge is filled and blinks a few times as it arrives. Once opened, a completed thread's
+ * badge goes away, as in T3; the others stay as an outline until the thread's state changes.
+ */
 export function StateBadge({ state, unread }: { state: SidebarThread["state"]; unread: boolean }) {
   const ring = "absolute -right-1 -bottom-1 flex size-[15px] items-center justify-center rounded-full ring-2 ring-t3-sidebar";
 
-  if (state === "idle") return null;
+  if (state === "idle" || (state === "completed" && !unread)) return null;
 
   if (state === "working") {
     return (
