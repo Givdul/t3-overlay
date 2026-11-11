@@ -2,6 +2,7 @@ import { Check, CircleDashed, X, createLucideIcon } from "lucide-react";
 import { DynamicIcon, type IconName } from "lucide-react/dynamic";
 import { PROJECT_COLORS } from "../../shared/projectIcon";
 import type { ProjectIcon, SidebarThread } from "../../shared/types";
+import type { TooltipContent } from "./Tooltip";
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -81,18 +82,24 @@ export function StateBadge({ state, unread }: { state: SidebarThread["state"]; u
     );
   }
 
-  const { color, title, Icon } = ATTENTION_BADGES[state];
+  const { color, Icon } = ATTENTION_BADGES[state];
   const popIn = "transition-[opacity,scale,background-color] duration-250 ease-out starting:opacity-0 motion-safe:starting:scale-60";
   const look = unread ? "unread-blink bg-current" : "border-[1.5px] border-current bg-t3-sidebar";
 
   return (
-    <span className={`${ring} ${popIn} ${color} ${look}`} title={title}>
+    <span className={`${ring} ${popIn} ${color} ${look}`}>
       <Icon size={unread ? 10 : 9} strokeWidth={3.5} className={unread ? "text-black/80" : undefined} />
     </span>
   );
 }
 
-export function threadTooltip(thread: SidebarThread): string {
+export function threadTooltip(thread: SidebarThread): TooltipContent {
   const where = [thread.projectName, thread.environmentLabel].filter(Boolean).join(" · ");
-  return where ? `${thread.title}\n${where}` : thread.title;
+  const badge = thread.state === "idle" || thread.state === "working" ? null : ATTENTION_BADGES[thread.state];
+
+  return {
+    title: thread.title,
+    detail: where || undefined,
+    notes: badge?.title ? [{ text: badge.title, color: badge.color }] : undefined,
+  };
 }

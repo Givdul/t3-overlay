@@ -2,6 +2,7 @@ import { CircleDashed, Plus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SIDEBAR_WIDTH, sameThread, threadKey, type OverlayState } from "../../shared/types";
 import { ProjectGlyph, StateBadge, threadTooltip } from "./ThreadIcon";
+import { Tooltip, useTooltip, type TooltipContent } from "./Tooltip";
 
 const VISIBLE_THREADS = 5;
 
@@ -159,90 +160,120 @@ export function Sidebar({ state }: { state: OverlayState }) {
     state.source === "local" ? "Only this PC: T3 is running without overlay support (see tray)" : null,
     state.layoutChanged ? "T3 layout changed: some chrome may show in the panel" : null,
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
-  ].filter(Boolean);
+  ].filter((warning) => warning !== null);
+
+  const tooltip = useTooltip();
+
+  const tipFor = (id: string): TooltipContent | undefined => {
+    switch (id) {
+      case "logo":
+        return {
+          title: "T3 overlay",
+          detail: "Drag to move, right-click for settings",
+          notes: warnings.map((text) => ({ text, color: "text-amber-300" })),
+        };
+      case "new":
+        return { title: "New thread" };
+      case "working":
+        return { title: `${state.working.length} working` };
+    }
+
+    const thread = state.threads.find((candidate) => threadKey(candidate) === id);
+
+    return thread && threadTooltip(thread);
+  };
+
+  const tip = tooltip.shown && tipFor(tooltip.shown.id);
 
   return (
-    <div
-      className="absolute flex flex-col rounded-2xl border border-t3-border bg-t3-sidebar"
-      style={{ top: state.sidebarOffsetY, left, right, width: SIDEBAR_WIDTH, maxHeight: `calc(100% - ${state.sidebarOffsetY}px)` }}
-    >
-      <div className="flex min-h-0 flex-col items-center overflow-y-auto px-2 py-2 [scrollbar-width:none]">
-        <button
-          type="button"
-          className={`${button} transition-colors ${state.t3 === "connected" ? "text-t3-fg" : "opacity-40"} ${state.locked ? "cursor-default" : "cursor-grab active:cursor-grabbing"}`}
-          title={["T3 overlay: drag to move, right-click for settings", ...warnings].join("\n")}
-          onMouseDown={(event) => {
-            if (event.button !== 0) return;
-            window.overlay.dragStart("move");
-            window.addEventListener("mouseup", () => window.overlay.dragEnd(), { once: true });
-          }}
-          onContextMenu={() => window.overlay.setPopover(state.popover === "settings" ? null : "settings")}
-        >
-          <T3Wordmark className="h-3.5 w-auto" />
-          {warnings.length > 0 && <span className="absolute top-0.5 right-0.5 size-2 rounded-full bg-amber-300 ring-2 ring-t3-sidebar" />}
-        </button>
+    <>
+      <div
+        className="absolute flex flex-col rounded-2xl border border-t3-border bg-t3-sidebar"
+        style={{ top: state.sidebarOffsetY, left, right, width: SIDEBAR_WIDTH, maxHeight: `calc(100% - ${state.sidebarOffsetY}px)` }}
+      >
+        <div className="flex min-h-0 flex-col items-center overflow-y-auto px-2 py-2 [scrollbar-width:none]">
+          <button
+            type="button"
+            className={`${button} transition-colors ${state.t3 === "connected" ? "text-t3-fg" : "opacity-40"} ${state.locked ? "cursor-default" : "cursor-grab active:cursor-grabbing"}`}
+            aria-label="T3 overlay"
+            {...tooltip.anchor("logo")}
+            onMouseDown={(event) => {
+              if (event.button !== 0) return;
+              window.overlay.dragStart("move");
+              window.addEventListener("mouseup", () => window.overlay.dragEnd(), { once: true });
+            }}
+            onContextMenu={() => window.overlay.setPopover(state.popover === "settings" ? null : "settings")}
+          >
+            <T3Wordmark className="h-3.5 w-auto" />
+            {warnings.length > 0 && <span className="absolute top-0.5 right-0.5 size-2 rounded-full bg-amber-300 ring-2 ring-t3-sidebar" />}
+          </button>
 
-        <button
-          type="button"
-          className={`${button} ${pressable} my-1.5 ${state.panel === "draft" ? "bg-t3-accent text-t3-fg" : ""}`}
-          title="New thread"
-          disabled={state.t3 !== "connected"}
-          onClick={() => window.overlay.open(state.panel === "draft" ? null : "draft")}
-        >
-          <Plus size={18} />
-        </button>
+          <button
+            type="button"
+            className={`${button} ${pressable} my-1.5 ${state.panel === "draft" ? "bg-t3-accent text-t3-fg" : ""}`}
+            aria-label="New thread"
+            {...tooltip.anchor("new")}
+            disabled={state.t3 !== "connected"}
+            onClick={() => window.overlay.open(state.panel === "draft" ? null : "draft")}
+          >
+            <Plus size={18} />
+          </button>
 
-        {working.slots.map(({ key, item: count, leaving }) => (
-          <div key={key} className={`${slot} ${leaving ? closing : "h-[42px]"}`}>
-            <button
-              type="button"
-              className={`${button} ${pressable} text-t3-info! ${state.popover === "working" ? "bg-t3-accent" : ""}`}
-              title={`${count} working`}
-              onClick={() => window.overlay.setPopover(state.popover === "working" ? null : "working")}
-            >
-              <CircleDashed size={24} strokeWidth={1.5} />
-              {/* pb-0.5 lifts the 9px-tall digits 1px, so they sit 0.5px above the ring's center instead of 0.5px below. */}
-              <span className="absolute inset-0 flex items-center justify-center pb-0.5 text-xs font-bold tabular-nums">{count}</span>
-            </button>
-          </div>
-        ))}
-
-        {divider.slots.map(({ key, leaving }) => (
-          <div key={key} className={`${slot} ${leaving ? closing : "h-[5px]"}`}>
-            <div className="my-0.5 h-px w-6 shrink-0 bg-t3-border" />
-          </div>
-        ))}
-
-        {/* Five icons fit; the rest scroll. The side and bottom padding keep state badges from being clipped.
-            Each slot holds the gap above its icon, so the list starts at the divider and clips its top 2px,
-            where it started when the gap sat outside it. */}
-        <div
-          className="-mx-1 -mb-1 flex shrink-0 flex-col overflow-y-auto px-1 pb-1 [clip-path:inset(2px_0_0)] [scrollbar-width:none]"
-          style={{
-            maxHeight: VISIBLE_THREADS * SLOT_HEIGHT + 4,
-            maskImage: moreBelow ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)" : undefined,
-          }}
-          onScroll={(event) => {
-            const list = event.currentTarget;
-            setScrolledToEnd(list.scrollTop + list.clientHeight >= list.scrollHeight - 2);
-          }}
-        >
-          {threads.slots.map(({ key, item: thread, order, leaving }) => (
-            <div key={key} className={`${slot} justify-end ${leaving ? closing : "h-[42px]"}`} style={{ order }}>
+          {working.slots.map(({ key, item: count, leaving }) => (
+            <div key={key} className={`${slot} ${leaving ? closing : "h-[42px]"}`}>
               <button
                 type="button"
-                className={`${button} ${pressable} ${sameThread(state.panel, thread) ? "bg-t3-accent ring-1 ring-t3-fg/30" : ""}`}
-                title={threadTooltip(thread)}
-                onClick={() => window.overlay.open(sameThread(state.panel, thread) ? null : thread)}
-                onContextMenu={() => window.overlay.threadMenu(thread)}
+                className={`${button} ${pressable} text-t3-info! ${state.popover === "working" ? "bg-t3-accent" : ""}`}
+                aria-label={`${count} working`}
+                {...tooltip.anchor("working")}
+                onClick={() => window.overlay.setPopover(state.popover === "working" ? null : "working")}
               >
-                <ProjectGlyph icon={thread.icon} size={26} />
-                <StateBadge key={thread.state} state={thread.state} unread={state.unread.some((ref) => sameThread(ref, thread))} />
+                <CircleDashed size={24} strokeWidth={1.5} />
+                {/* pb-0.5 lifts the 9px-tall digits 1px, so they sit 0.5px above the ring's center instead of 0.5px below. */}
+                <span className="absolute inset-0 flex items-center justify-center pb-0.5 text-xs font-bold tabular-nums">{count}</span>
               </button>
             </div>
           ))}
+
+          {divider.slots.map(({ key, leaving }) => (
+            <div key={key} className={`${slot} ${leaving ? closing : "h-[5px]"}`}>
+              <div className="my-0.5 h-px w-6 shrink-0 bg-t3-border" />
+            </div>
+          ))}
+
+          {/* Five icons fit; the rest scroll. The side and bottom padding keep state badges from being clipped.
+              Each slot holds the gap above its icon, so the list starts at the divider and clips its top 2px,
+              where it started when the gap sat outside it. */}
+          <div
+            className="-mx-1 -mb-1 flex shrink-0 flex-col overflow-y-auto px-1 pb-1 [clip-path:inset(2px_0_0)] [scrollbar-width:none]"
+            style={{
+              maxHeight: VISIBLE_THREADS * SLOT_HEIGHT + 4,
+              maskImage: moreBelow ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)" : undefined,
+            }}
+            onScroll={(event) => {
+              const list = event.currentTarget;
+              setScrolledToEnd(list.scrollTop + list.clientHeight >= list.scrollHeight - 2);
+            }}
+          >
+            {threads.slots.map(({ key, item: thread, order, leaving }) => (
+              <div key={key} className={`${slot} justify-end ${leaving ? closing : "h-[42px]"}`} style={{ order }}>
+                <button
+                  type="button"
+                  className={`${button} ${pressable} ${sameThread(state.panel, thread) ? "bg-t3-accent ring-1 ring-t3-fg/30" : ""}`}
+                  aria-label={thread.title}
+                  {...tooltip.anchor(key)}
+                  onClick={() => window.overlay.open(sameThread(state.panel, thread) ? null : thread)}
+                  onContextMenu={() => window.overlay.threadMenu(thread)}
+                >
+                  <ProjectGlyph icon={thread.icon} size={26} />
+                  <StateBadge key={thread.state} state={thread.state} unread={state.unread.some((ref) => sameThread(ref, thread))} />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
-    </div>
+      {tooltip.shown && tip && <Tooltip side={state.side} shown={tooltip.shown} content={tip} />}
+    </>
   );
 }

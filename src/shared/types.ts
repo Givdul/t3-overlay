@@ -91,7 +91,18 @@ export interface Extent {
   sidebarHeight: number;
   /** The open popover's height. Null until it reports, then the shape covers its largest size. */
   popoverHeight: number | null;
+  /** The sidebar tooltip's box, `top` in window pixels, while one shows or fades out. */
+  tooltip: TooltipBox | null;
 }
+
+export interface TooltipBox {
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** The widest a sidebar tooltip gets. While one shows, the window keeps this much room beside the sidebar. */
+export const TOOLTIP_MAX_WIDTH = 240;
 
 /** Small surfaces that open beside the sidebar: the working-thread list and the logo's settings. */
 export type Popover = "working" | "settings";

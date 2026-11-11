@@ -6,6 +6,7 @@ import {
   PANEL_MIN,
   POPOVER_SIZE,
   SIDEBAR_WIDTH,
+  TOOLTIP_MAX_WIDTH,
   popoverLeft,
   sameThread,
   slotLeft,
@@ -41,7 +42,8 @@ import { setReducedMotion, trackMotion } from "./motion";
 const persisted = loadPersisted();
 let config = loadConfig();
 let win: BrowserWindow | null = null;
-let extent: Extent = { sidebarHeight: 160, popoverHeight: null };
+
+let extent: Extent = { sidebarHeight: 160, popoverHeight: null, tooltip: null };
 let clientSettings: string | null = null;
 /** The desktop app's theme keys, read over the debugging port. Null without it. */
 let themeStorage: ThemeStorage | null = null;
@@ -100,7 +102,15 @@ function layout(): boolean {
   const display = screen.getDisplayNearestPoint(a);
   const area = display.workArea;
   const side = a.x + SIDEBAR_WIDTH / 2 < area.x + area.width / 2 ? "left" : "right";
-  const slot = state.panel ? state.panelSize : state.popover ? POPOVER_SIZE[state.popover] : null;
+
+  // A panel or popover slot is wider than any tooltip, so a tooltip only widens a bare sidebar.
+  const slot = state.panel
+    ? state.panelSize
+    : state.popover
+      ? POPOVER_SIZE[state.popover]
+      : extent.tooltip
+        ? { width: TOOLTIP_MAX_WIDTH, height: 0 }
+        : null;
   const slotSpan = slot ? PANEL_GAP + slot.width : 0;
   const height = Math.min(area.height, Math.max(extent.sidebarHeight, slot?.height ?? 0));
   const x = side === "left" ? a.x : a.x - slotSpan;
@@ -130,6 +140,13 @@ function shape(width: number, scaleFactor: number) {
     const size = POPOVER_SIZE[state.popover];
     const height = extent.popoverHeight ?? size.height;
     rects.push({ x: popoverLeft(state, state.popover), y: state.sidebarOffsetY, width: size.width, height });
+  }
+
+  if (extent.tooltip) {
+    // The gap is part of the tooltip's rect: it slides in from the sidebar's edge.
+    const { top, width: tipWidth, height } = extent.tooltip;
+    const x = state.side === "left" ? SIDEBAR_WIDTH : width - SIDEBAR_WIDTH - PANEL_GAP - tipWidth;
+    rects.push({ x, y: top, width: PANEL_GAP + tipWidth, height });
   }
   const key = JSON.stringify([scaleFactor, rects]);
   if (key === lastShape) return;
@@ -462,7 +479,9 @@ handleHost("overlay:init", () => ({ state }));
 handleHost("overlay:get-theme-storage", () => themeStorage);
 
 onHost("overlay:extent", (_event, next: Partial<Extent>) => {
-  if (Object.entries(next).every(([key, value]) => extent[key as keyof Extent] === value)) return;
+  // By value: the tooltip's box is an object, and every report of it is a new one.
+  if (JSON.stringify({ ...extent, ...next }) === JSON.stringify(extent)) return;
+
   extent = { ...extent, ...next };
   layout();
   broadcast();
