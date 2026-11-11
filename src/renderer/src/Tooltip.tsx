@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
-import { PANEL_GAP, SIDEBAR_WIDTH, type OverlayState } from "../../shared/types";
+import { PANEL_GAP, SIDEBAR_WIDTH, TOOLTIP_MAX_WIDTH, type OverlayState } from "../../shared/types";
 
 export interface TooltipContent {
   title: string;
@@ -18,7 +18,7 @@ const EXIT_MS = 100;
 
 interface Shown {
   id: string;
-  centerY: number;
+  anchor: HTMLElement;
   open: boolean;
   entrance: boolean;
 }
@@ -29,12 +29,31 @@ export function useTooltip() {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const closedAt = useRef(-Infinity);
 
+  const drop = () => {
+    clearTimeout(timer.current);
+    setShown(null);
+  };
+
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const show = (id: string, anchor: HTMLElement, entrance: boolean) => {
-    const { top, height } = anchor.getBoundingClientRect();
-    setShown({ id, centerY: top + height / 2, open: true, entrance });
-  };
+  // A removed icon never sends pointerleave.
+  useEffect(() => {
+    if (shown && !shown.anchor.isConnected) drop();
+  });
+
+  // Hiding the overlay with its hotkey sends no pointerleave either, and on Windows a tooltip left in the
+  // window's shape would take the game's clicks.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) drop();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  const show = (id: string, anchor: HTMLElement, entrance: boolean) => setShown({ id, anchor, open: true, entrance });
 
   const enter = (id: string, anchor: HTMLElement) => {
     clearTimeout(timer.current);
@@ -81,8 +100,9 @@ const MOTION = {
 /** Sits beside the sidebar, on the chat's side, centered on its icon and kept inside the window. */
 export function Tooltip({ side, shown, content }: { side: OverlayState["side"]; shown: Shown; content: TooltipContent }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [size, setSize] = useState({ width: 0, height: 0, centerY: 0 });
 
+  // Measured on every render: the icon moves when a slot above it closes or the window re-lays out.
   // The outer box is never transformed, so its rect is the card's resting size, which the window's shape needs.
   useLayoutEffect(() => {
     const element = ref.current;
@@ -90,10 +110,12 @@ export function Tooltip({ side, shown, content }: { side: OverlayState["side"]; 
     if (!element) return;
 
     const { width, height } = element.getBoundingClientRect();
-    setSize((old) => (old.width === width && old.height === height ? old : { width, height }));
+    const icon = shown.anchor.getBoundingClientRect();
+    const centerY = icon.top + icon.height / 2;
+    setSize((old) => (old.width === width && old.height === height && old.centerY === centerY ? old : { width, height, centerY }));
   });
 
-  const top = Math.max(0, Math.min(shown.centerY - size.height / 2, window.innerHeight - size.height));
+  const top = Math.max(0, Math.min(size.centerY - size.height / 2, window.innerHeight - size.height));
 
   useLayoutEffect(() => {
     // Before the first measurement lands.
@@ -117,8 +139,8 @@ export function Tooltip({ side, shown, content }: { side: OverlayState["side"]; 
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none absolute z-20 w-max max-w-60"
-      style={{ top, ...(side === "left" ? { left: SIDEBAR_WIDTH + PANEL_GAP } : { right: SIDEBAR_WIDTH + PANEL_GAP }) }}
+      className="pointer-events-none absolute z-20 w-max"
+      style={{ top, maxWidth: TOOLTIP_MAX_WIDTH, ...(side === "left" ? { left: SIDEBAR_WIDTH + PANEL_GAP } : { right: SIDEBAR_WIDTH + PANEL_GAP }) }}
     >
       <div
         className={`rounded-lg border border-t3-border bg-t3-popover px-2.5 py-1.5 shadow-lg shadow-black/40 transition-[opacity,translate,scale] ease-out ${motion.origin} ${state}`}
