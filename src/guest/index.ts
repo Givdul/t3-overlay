@@ -158,6 +158,7 @@ window.addEventListener(
 window.addEventListener(
   "keydown",
   (event) => {
+    if (event.key === "Escape") stopWatchingDictatedSend();
     if (event.key === "Escape" && document.querySelector(OPEN_POPOVER) === null) {
       ipcRenderer.sendToHost("escape");
     }
@@ -176,11 +177,69 @@ function inComposer(target: EventTarget | null): boolean {
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
 // A send is the composer going from text to empty right after Enter or the send button.
 function watchForSend() {
+  if (voiceActive()) return watchForDictatedSend();
   if (composerText() === "") return;
   setTimeout(() => {
     if (composerText() === "") ipcRenderer.sendToHost("sent");
   }, 250);
 }
+
+// While dictating, the composer stays empty (T3 shows the live transcript in its own box). Sending then
+// waits for the transcription: T3 writes the transcript into the composer, sends it, and clears it.
+// T3 labels its voice controls; nothing else marks the dictation phase.
+const voiceActive = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Cancel voice input"]`) !== null;
+
+const voiceFailed = () => document.querySelector(`${COMPOSER_FORM} [aria-label="Dismiss voice input error"]`) !== null;
+
+/** How long after dictation ends the transcript has to land in the composer and be sent. */
+const DICTATED_SEND_GRACE_MS = 2000;
+
+let dictatedSend: MutationObserver | null = null;
+
+let dictatedSendGrace: ReturnType<typeof setTimeout> | null = null;
+
+function stopWatchingDictatedSend() {
+  dictatedSend?.disconnect();
+  dictatedSend = null;
+
+  if (dictatedSendGrace !== null) clearTimeout(dictatedSendGrace);
+  dictatedSendGrace = null;
+}
+
+// Watches every DOM change, not a timer: the transcript can be in the composer for less than a frame.
+function watchForDictatedSend() {
+  stopWatchingDictatedSend();
+  let sawText = composerText() !== "";
+
+  dictatedSend = new MutationObserver(() => {
+    const hasText = composerText() !== "";
+
+    sawText ||= hasText;
+
+    if (voiceActive()) return;
+
+    if (voiceFailed()) return stopWatchingDictatedSend();
+
+    if (sawText && !hasText) {
+      stopWatchingDictatedSend();
+      ipcRenderer.sendToHost("sent");
+
+      return;
+    }
+
+    dictatedSendGrace ??= setTimeout(stopWatchingDictatedSend, DICTATED_SEND_GRACE_MS);
+  });
+  dictatedSend.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
+// Cancelling voice input drops the pending send and leaves the composer as empty as a send would.
+window.addEventListener(
+  "click",
+  (event) => {
+    if (event.target instanceof Element && event.target.closest('[aria-label="Cancel voice input"]')) stopWatchingDictatedSend();
+  },
+  true,
+);
 
 // Tells the overlay where T3 went on its own, such as a draft turning into a thread after the first send.
 const isThreadRoute = () => /^\/[^/]+\/[^/]+$/.test(location.pathname) && !/^\/(draft|settings)\//.test(location.pathname);
