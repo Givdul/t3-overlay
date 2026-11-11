@@ -122,15 +122,26 @@ const composerText = () =>
   document.querySelector(`${COMPOSER_FORM} [data-testid="composer-editor"], ${COMPOSER_FORM} textarea`)?.textContent?.trim() ?? "";
 
 // Compact composer: an empty composer without focus folds into a write button below the history.
-// Focus moving in only unfolds. Focus leaving, a route change, or new settings re-check the fold.
+// Focus moving in only unfolds. Focus leaving, voice input starting or ending, a route change, or new settings re-check the fold.
 const setFolded = (folded: boolean) => document.documentElement.toggleAttribute("data-overlay-composer-folded", folded);
 const composerFocused = () =>
   document.hasFocus() && document.querySelector("[data-chat-composer-overlay]")?.contains(document.activeElement) === true;
 
+const voiceShown = () => voiceActive() || voiceFailed();
+
+let showedVoice = false;
+
 function foldComposer() {
-  const idle = !composerFocused() && composerText() === "" && document.querySelector(OPEN_POPOVER) === null;
+  showedVoice = voiceShown();
+  const idle = !showedVoice && !composerFocused() && composerText() === "" && document.querySelector(OPEN_POPOVER) === null;
   setFolded(chrome !== null && chrome.compactComposer && !chrome.needsReply && idle);
 }
+
+// T3 disables its editor while dictating, so focus leaves the still-empty composer. Its voice controls keep the
+// composer open until the transcript lands, the recording is cancelled, or an error is dismissed.
+new MutationObserver(() => {
+  if (voiceShown() !== showedVoice) foldComposer();
+}).observe(document, { childList: true, subtree: true });
 
 /** Unfolds the composer and focuses T3's editor. A resting composer shows a prompt button that mounts the editor. */
 function openComposer() {
