@@ -52,8 +52,11 @@ body,
   background: transparent !important;
 }
 
+/* On drafts and settings this is the whole page, so it gets the chat window's border and corners too. */
 [data-workspace-area="conversation"] {
   background: var(--overlay-bg) !important;
+  border: 1px solid var(--overlay-border);
+  border-radius: var(--overlay-radius);
 }
 
 html[data-overlay-route="thread"] [data-chat-canvas] {
