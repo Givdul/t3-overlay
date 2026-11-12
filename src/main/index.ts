@@ -34,7 +34,6 @@ import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
 import { dispatchCommand } from "./rpc";
 import { snoozeChoices } from "./snooze";
-import { setReducedMotion } from "./motion";
 
 const persisted = loadPersisted();
 let config = loadConfig();
@@ -320,8 +319,6 @@ function createWindow() {
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.setAlwaysOnTop(true, "screen-saver");
-  win.on("focus", () => setReducedMotion(false));
-  win.on("blur", () => setReducedMotion(true));
   win.on("ready-to-show", () => win?.showInactive());
   win.on("show", () => {
     state.unread = unreadWithout(state.panel);
@@ -571,7 +568,7 @@ handleHostWith("overlay:voice-start", async (): Promise<VoiceStartReply> => {
   if (localServer === null) return { ok: false, error: "T3 is not connected" };
 
   // macOS gates the microphone at the OS too; the stock Electron build carries the usage string.
-  if (process.platform === "darwin" && process.env.T3_OVERLAY_VOICE_FIXTURE === undefined) {
+  if (process.platform === "darwin") {
     try {
       if (!(await systemPreferences.askForMediaAccess("microphone"))) {
         return { ok: false, error: "Microphone access is off. Allow t3-overlay in System Settings → Privacy & Security → Microphone." };
@@ -588,8 +585,9 @@ handleHostWith("overlay:voice-start", async (): Promise<VoiceStartReply> => {
     const stream = startVoice({ server: localServer, token, onEvent: sendVoiceEvent });
 
     voice = stream;
+    await stream.start();
 
-    return { ok: true, ...(await stream.start()) };
+    return { ok: true };
   } catch (error) {
     voice = null;
 
@@ -645,13 +643,19 @@ app.whenReady().then(() => {
   createWindow();
   createTray(trayActions);
   registerHotkeys();
-  // The page asks for the microphone; only the overlay's own window may have it.
+  // The page asks for the microphone and the clipboard; only the overlay's own window may have them.
   session.defaultSession.setPermissionCheckHandler(
-    (contents, permission, _origin, details) => contents === win?.webContents && permission === "media" && details.mediaType === "audio",
+    (contents, permission, _origin, details) =>
+      contents === win?.webContents &&
+      ((permission === "media" && details.mediaType === "audio") || permission === "clipboard-sanitized-write"),
   );
   session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
     const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
-    callback(contents === win?.webContents && permission === "media" && mediaTypes.length > 0 && mediaTypes.every((kind) => kind === "audio"));
+    callback(
+      contents === win?.webContents &&
+        ((permission === "media" && mediaTypes.length > 0 && mediaTypes.every((kind) => kind === "audio")) ||
+          permission === "clipboard-sanitized-write"),
+    );
   });
   watch(configPath(), () => {
     config = loadConfig();

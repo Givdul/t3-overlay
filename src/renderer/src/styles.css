@@ -309,3 +309,61 @@ body {
   color: var(--t3-contrast-foreground);
   vertical-align: baseline;
 }
+
+/* Coloured fences: refractor's Prism classes in the panel's own fixed palette. Comments and punctuation
+   follow the theme's muted colour; the rest is one scan of hues chosen to stay legible on T3's dark and
+   light code backgrounds. */
+.t3-prose .token.comment,
+.t3-prose .token.prolog,
+.t3-prose .token.doctype,
+.t3-prose .token.cdata,
+.t3-prose .token.punctuation {
+  color: var(--t3-contrast-muted-foreground);
+}
+
+.t3-prose .token.keyword,
+.t3-prose .token.atrule {
+  color: oklch(0.72 0.14 300);
+}
+
+.t3-prose .token.string,
+.t3-prose .token.char,
+.t3-prose .token.inserted {
+  color: oklch(0.75 0.13 150);
+}
+
+.t3-prose .token.number,
+.t3-prose .token.boolean,
+.t3-prose .token.constant,
+.t3-prose .token.symbol {
+  color: oklch(0.78 0.13 70);
+}
+
+.t3-prose .token.function,
+.t3-prose .token.variable {
+  color: oklch(0.76 0.12 250);
+}
+
+.t3-prose .token.class-name,
+.t3-prose .token.builtin {
+  color: oklch(0.8 0.12 95);
+}
+
+.t3-prose .token.property,
+.t3-prose .token.attr-name,
+.t3-prose .token.operator,
+.t3-prose .token.entity,
+.t3-prose .token.url {
+  color: oklch(0.78 0.09 205);
+}
+
+.t3-prose .token.tag,
+.t3-prose .token.selector,
+.t3-prose .token.deleted,
+.t3-prose .token.important {
+  color: oklch(0.72 0.15 25);
+}
+
+.t3-prose .token.regex {
+  color: oklch(0.79 0.11 120);
+}

@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type { T3Server } from "./t3";
 
 // T3's streaming dictation (apps/server/src/speech/stream.ts): one websocket per recording, a JSON
@@ -14,8 +13,8 @@ export interface VoiceOptions {
 }
 
 export interface VoiceStream {
-  /** Opens the stream. `fixture` means main feeds a recorded clip instead of the microphone. */
-  start(): Promise<{ fixture: boolean }>;
+  /** Opens the stream and waits for the server's `ready` before audio may be fed. */
+  start(): Promise<void>;
   feed(pcm: ArrayBuffer): void;
   finish(): Promise<string>;
   cancel(): void;
@@ -38,14 +37,8 @@ const OPTIONS: SpeechOptions = {
   speechSilenceFiltering: true,
 };
 
-/** Same ceiling the server enforces on one binary frame. */
-const CHUNK_BYTES = 16_000 * 4;
-
 const READY_TIMEOUT_MS = 30_000;
 const FINISH_TIMEOUT_MS = 120_000;
-
-/** Raw Float32, 16 kHz mono: `say -o` → convert, then strip the container. Verification only. */
-const FIXTURE_PATH = process.env.T3_OVERLAY_VOICE_FIXTURE;
 
 interface StatusReply {
   supported?: boolean;
@@ -109,7 +102,7 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     }
   }
 
-  async function start(): Promise<{ fixture: boolean }> {
+  async function start(): Promise<void> {
     await assertReady(options);
     const ticket = await mediaTicket(options);
     const url = new URL("/ws/voice", options.server.origin.replace(/^http/, "ws"));
@@ -131,14 +124,8 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     });
     send(JSON.stringify({ type: "start", options: OPTIONS }));
 
-    // `ready` clears the start timeout; until then a fixture must wait too.
+    // `ready` clears the start timeout.
     await waitReady();
-
-    if (FIXTURE_PATH === undefined) return { fixture: false };
-
-    void feedFixture();
-
-    return { fixture: true };
   }
 
   let readyResolver: (() => void) | null = null;
@@ -156,25 +143,6 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     });
 
     return readyPromise;
-  }
-
-  async function feedFixture() {
-    try {
-      const bytes = await readFile(FIXTURE_PATH!);
-
-      // Paced so the live transcript has time to arrive, not real time: the clip is seconds long.
-      for (let offset = 0; offset < bytes.byteLength && !cancelled && !finishSent; offset += CHUNK_BYTES) {
-        const chunk = new Uint8Array(Math.min(CHUNK_BYTES, bytes.byteLength - offset));
-
-        chunk.set(bytes.subarray(offset, offset + chunk.byteLength));
-        send(chunk);
-        await new Promise((resolve) => setTimeout(resolve, 40));
-      }
-
-      if (!cancelled && !finishSent) requestFinish();
-    } catch (error) {
-      fail(error instanceof Error ? error : new Error("Could not read the voice fixture."));
-    }
   }
 
   function requestFinish() {

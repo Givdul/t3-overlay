@@ -309,7 +309,6 @@ export type PanelPathsReply = { ok: true; entries: PanelPathEntry[]; truncated: 
 
 export type VoiceEvent = { kind: "text"; committed: string; tentative: string } | { kind: "error"; message: string };
 
-/** `fixture` means main feeds a recorded clip: verification runs without a microphone. */
-export type VoiceStartReply = { ok: true; fixture: boolean } | { ok: false; error: string };
+export type VoiceStartReply = { ok: true } | { ok: false; error: string };
 
 export type VoiceFinishReply = { ok: true; text: string } | { ok: false; error: string };

@@ -233,15 +233,13 @@ export function Composer(props: ComposerProps) {
       return;
     }
 
-    if (!started.fixture) {
-      try {
-        recording.current = await startPcmRecording((pcm) => window.overlay.voiceAudio(pcm));
-      } catch (captureError) {
-        window.overlay.voiceCancel();
-        setDictation({ ...IDLE_DICTATION, error: captureError instanceof Error ? captureError.message : "Could not start the microphone." });
+    try {
+      recording.current = await startPcmRecording((pcm) => window.overlay.voiceAudio(pcm));
+    } catch (captureError) {
+      window.overlay.voiceCancel();
+      setDictation({ ...IDLE_DICTATION, error: captureError instanceof Error ? captureError.message : "Could not start the microphone." });
 
-        return;
-      }
+      return;
     }
 
     setDictation({ ...IDLE_DICTATION, phase: "recording", startedAt: Date.now() });
@@ -802,7 +800,7 @@ export function Composer(props: ComposerProps) {
           onClick={() => toggleMenu("permission")}
           title={`Permissions: ${runtimeModeLabel(runtimeMode)}. ${runtimeModeInfo(runtimeMode).description}`}
         />
-        <div className="min-w-0 flex-1" />
+        {!busy && <div className="min-w-0 flex-1" />}
         {busy ? (
           <DictationPill
             phase={dictation.phase}
@@ -912,7 +910,7 @@ function DictationPill({
     <div
       role="status"
       aria-label={label ?? "Recording"}
-      className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--t3-contrast-border)_100%,transparent)] bg-[var(--t3-surface-raised)] px-1.5 py-1"
+      className="flex flex-1 items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--t3-contrast-border)_100%,transparent)] bg-[var(--t3-surface-raised)] px-1.5 py-1"
     >
       <button
         type="button"

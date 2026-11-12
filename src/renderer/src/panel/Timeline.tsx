@@ -1,10 +1,12 @@
 import {
+  Check,
   ChevronRight,
   Circle,
   CircleAlert,
   CircleCheck,
   CircleDashed,
   CircleHelp,
+  Copy,
   FilePenLine,
   Globe,
   LoaderCircle,
@@ -12,7 +14,7 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { PanelItem, PanelView } from "../../../shared/panel";
 import { Markdown } from "../markdown";
 import type { PendingRequests } from "./model";
@@ -22,6 +24,13 @@ import { ApprovalCard, QuestionCard } from "./Requests";
 // timeline reads like the one the webview showed.
 
 type LinkHandler = (url: string) => void;
+
+// T3's chat clock (apps/web/src/timestampFormat.ts): locale time with minutes, a day-aware short date
+// for older messages, and the full date in the tooltip. The overlay ignores T3's timestampFormat setting.
+const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const MONTH_FORMAT = new Intl.DateTimeFormat("en-US", { month: "long" });
+const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric" });
+const DATE_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric", year: "numeric" });
 
 const mono = "font-mono text-[length:var(--t3-font-size-code)]";
 
@@ -110,11 +119,14 @@ function UserMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler
   const queued = item.inputIntent === "queued_turn" && item.status !== "completed";
 
   return (
-    <div className="flex min-w-0 flex-col items-end gap-1">
+    <div className="group/msg flex min-w-0 flex-col items-end gap-1">
       <div className="max-w-[80%] min-w-0 rounded-2xl bg-[var(--t3-message-surface)] p-3 text-[length:var(--t3-font-size-prompt)] text-[var(--t3-contrast-message-foreground)]">
         <Markdown text={text} onLink={onLink} />
       </div>
-      {queued && <span className="me-1 text-[11px] text-t3-muted">Queued</span>}
+      <div className="flex min-h-5 items-center gap-2 pe-1">
+        {queued && <span className="text-[11px] text-t3-muted">Queued</span>}
+        <MessageMeta text={text} at={item.startedAt ?? item.completedAt} timeFirst />
+      </div>
     </div>
   );
 }
@@ -123,10 +135,97 @@ function AssistantMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHa
   const text = item.text ?? "";
 
   return (
-    <div className="min-w-0 px-1 py-0.5 text-[length:var(--t3-font-size-prompt)] leading-relaxed text-[color-mix(in_oklab,var(--t3-contrast-foreground)_90%,transparent)]">
+    <div className="group/msg min-w-0 px-1 py-0.5 text-[length:var(--t3-font-size-prompt)] leading-relaxed text-[color-mix(in_oklab,var(--t3-contrast-foreground)_90%,transparent)]">
       <Markdown text={text} onLink={onLink} />
+      <div className="flex min-h-5 items-center">
+        <MessageMeta text={text} at={item.completedAt ?? item.startedAt} />
+      </div>
     </div>
   );
+}
+
+/** T3's hover chrome under a message: its time, and a button that copies the message's text. */
+function MessageMeta({ text, at, timeFirst = false }: { text: string; at: string | undefined; timeFirst?: boolean }) {
+  const time = messageTimestamp(at);
+
+  return (
+    <div className="flex items-center gap-1 text-[11px] text-t3-muted opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/msg:opacity-100">
+      {timeFirst && time}
+      <CopyButton text={text} />
+      {!timeFirst && time}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  return (
+    <button
+      type="button"
+      title="Copy message"
+      aria-label="Copy message"
+      onClick={() => {
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setCopied(true);
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(() => setCopied(false), 1200);
+          })
+          .catch(() => undefined);
+      }}
+      className="flex size-5 shrink-0 items-center justify-center rounded text-t3-muted transition-colors hover:text-t3-fg"
+    >
+      {copied ? <Check size={12} className="text-[var(--t3-primary)]" /> : <Copy size={12} />}
+    </button>
+  );
+}
+
+/** T3's `formatDayAwareTimestamp` and `formatChatTimestampTooltip` for one item. */
+function messageTimestamp(iso: string | undefined): ReactNode {
+  if (iso === undefined) return null;
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) return null;
+  const time = TIME_FORMAT.format(date);
+  const today = new Date();
+  const days = dayIndex(today) - dayIndex(date);
+  const dateFormat = date.getFullYear() === today.getFullYear() ? DATE_FORMAT : DATE_YEAR_FORMAT;
+  const label = days <= 0 ? time : days === 1 ? `yesterday at ${time}` : `${dateFormat.format(date)} ${time}`;
+  const day = date.getDate();
+  const title = `${time}, ${day}${ordinal(day)} ${MONTH_FORMAT.format(date)} ${date.getFullYear()}`;
+
+  return (
+    <span title={title} className="shrink-0 tabular-nums">
+      {label}
+    </span>
+  );
+}
+
+/** Days since the epoch by local calendar day, so a comparison across a DST change still counts days. */
+function dayIndex(date: Date): number {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+}
+
+function ordinal(day: number): string {
+  const lastTwo = day % 100;
+
+  if (lastTwo >= 11 && lastTwo <= 13) return "th";
+
+  switch (day % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
 }
 
 // ---------------------------------------------------------------- expandable rows

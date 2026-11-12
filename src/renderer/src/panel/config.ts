@@ -77,13 +77,6 @@ export function modelFor(config: PanelConfig | null, selection: PanelModelSelect
   return catalog?.models.find((model) => model.slug === selection?.model) ?? null;
 }
 
-/** The model chip's name comes from the catalog, never from the slug. */
-export function modelLabel(config: PanelConfig | null, selection: PanelModelSelection | null): string | null {
-  if (selection === null) return null;
-
-  return modelFor(config, selection)?.name ?? selection.model;
-}
-
 export function optionValue(option: PanelModelOption, selection: PanelModelSelection): string | boolean | null {
   const found = selection.options?.find((candidate) => candidate.id === option.id);
 

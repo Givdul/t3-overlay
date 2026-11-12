@@ -63,7 +63,8 @@ export interface CdpFeedOptions {
 export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): void } | null> {
   let targets: { type: string; url: string; webSocketDebuggerUrl: string }[];
   try {
-    targets = await (await fetch(`http://127.0.0.1:${options.port}/json/list`, { signal: AbortSignal.timeout(2000) })).json();
+    // SAFETY: /json/list answers Chrome's own target descriptors, the fields read below.
+    targets = (await (await fetch(`http://127.0.0.1:${options.port}/json/list`, { signal: AbortSignal.timeout(2000) })).json()) as typeof targets;
   } catch {
     return null;
   }

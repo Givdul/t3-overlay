@@ -1,7 +1,8 @@
 import { app, type BrowserWindow } from "electron";
 import koffi from "koffi";
 
-// Windows only. Elsewhere, Electron's focus() and blur() are enough.
+// Windows needs user32 to hand the foreground back and forth around the game; macOS uses app.hide()
+// (see returnFocus), and Electron's own focus()/blur() cover the rest.
 const user32 = process.platform === "win32" ? koffi.load("user32.dll") : null;
 const kernel32 = process.platform === "win32" ? koffi.load("kernel32.dll") : null;
 const getForegroundWindow = user32?.func("void* __stdcall GetForegroundWindow()");

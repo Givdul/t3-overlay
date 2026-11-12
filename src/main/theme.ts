@@ -86,8 +86,6 @@ const LIGHT: ThemeTokens = {
   radius: "0.5rem",
 };
 
-export const FALLBACK_TOKENS = { dark: DARK, light: LIGHT } as const;
-
 /** T3's own font stacks, from apps/web/src/appearanceFonts.ts. */
 export const DEFAULT_SANS = '-apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif';
 export const DEFAULT_CODE = '"SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace';
