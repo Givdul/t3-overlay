@@ -40,6 +40,14 @@ export function Timeline({ view, pending, onLink }: TimelineProps) {
       {view.rows.map((row) => (
         <TimelineRow key={row.sourceItemId} item={row.item} pending={pending} onLink={onLink} />
       ))}
+      {view.queued.map((message) => (
+        <div key={message.id} className="flex min-w-0 flex-col items-end gap-1">
+          <span className="me-1 text-[11px] text-t3-muted">Queued</span>
+          <div className="max-w-[80%] min-w-0 rounded-2xl bg-[var(--t3-message-surface)] p-3 text-[length:var(--t3-font-size-prompt)] text-[var(--t3-contrast-message-foreground)]">
+            <Markdown text={message.text} onLink={onLink} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -79,7 +87,8 @@ function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { 
     case "approval_request": {
       const request = pending.approvals.find((candidate) => candidate.id === item.requestId);
 
-      return request === undefined ? <MutedLine text="Approval requested" /> : <ApprovalCard request={request} />;
+      // A resolved approval was answered in T3 or here; its card is gone and leaves no row behind.
+      return request === undefined ? null : <ApprovalCard request={request} />;
     }
 
     case "user_input_request": {

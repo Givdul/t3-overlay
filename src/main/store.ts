@@ -11,6 +11,8 @@ export interface Persisted {
   locked: boolean;
   settings: OverlaySettings;
   lastThread: ThreadRef | null;
+  /** The project the draft starts its next thread in. */
+  lastProjectId: string | null;
 }
 
 export interface Config {
@@ -26,6 +28,7 @@ const DEFAULT_PERSISTED: Persisted = {
   locked: false,
   settings: DEFAULT_SETTINGS,
   lastThread: null,
+  lastProjectId: null,
 };
 
 const DEFAULT_CONFIG: Config = {

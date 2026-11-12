@@ -1,8 +1,11 @@
-import { ArrowDown, PenLine } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { useEffect, useReducer, useRef, useState, type CSSProperties } from "react";
 import type { PanelThread } from "../../shared/panel";
 import { threadKey, type OverlaySettings, type OverlayState, type PanelTarget, type SidebarThread } from "../../shared/types";
+import { Composer, draftPicks, type ComposerHandle, type ComposerPicks } from "./panel/Composer";
+import { DraftProjects } from "./panel/Draft";
 import { Timeline } from "./panel/Timeline";
+import { sameSelection } from "./panel/config";
 import { activeRun, applyPanelMessage, initialState, needsReply, pendingRequests } from "./panel/model";
 
 /**
@@ -14,9 +17,15 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const targetKey = target === null ? "none" : target === "draft" ? target : threadKey(target);
   const threadId = target === null || target === "draft" ? null : target.threadId;
   const [panel, dispatch] = useReducer(applyPanelMessage, targetKey, initialState);
-  /** The read-only composer stands in for the real one: it unfolds, but has nothing to type into yet. */
   const [composerOpen, setComposerOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [picks, setPicks] = useState<ComposerPicks>({ model: null, runtimeMode: null });
+  const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   const [showToEnd, setShowToEnd] = useState(false);
+  const composer = useRef<ComposerHandle | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const threadRef = useRef(threadId);
@@ -24,10 +33,16 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   threadRef.current = threadId;
   targetRef.current = targetKey;
 
-  // A new thread starts clean: no unfolded composer from the last one. Rows reset through the
-  // reducer, which tags every message with its target (see panel/model.ts).
+  // A new thread starts clean: no text, no unfolded composer, no picks from the last one. Rows reset
+  // through the reducer, which tags every message with its target (see panel/model.ts).
   useEffect(() => {
     setComposerOpen(false);
+    setText("");
+    setFocused(false);
+    setMenuOpen(false);
+    setBusy(false);
+    setPicks({ model: null, runtimeMode: null });
+    setDraftProjectId(null);
     setShowToEnd(false);
     follow.current = true;
   }, [targetKey]);
@@ -42,10 +57,11 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   );
 
   // "Follow" while the reader is at the end; hold the position while they are reading further up.
+  // The draft's project list starts at the top instead: its first row is the default.
   useEffect(() => {
     const element = scroller.current;
 
-    if (element && follow.current) element.scrollTop = element.scrollHeight;
+    if (target !== "draft" && element && follow.current) element.scrollTop = element.scrollHeight;
   });
 
   // An event this build cannot fold in: re-read the projection once the burst settles.
@@ -56,10 +72,36 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     return () => clearTimeout(timer);
   }, [panel.stale, panel.sequence]);
 
+  // The draft is seeded, not blank: the last project, then the server's model and runtime defaults.
+  useEffect(() => {
+    if (target !== "draft" || panel.draft === null) return;
+    const { projects, lastProjectId } = panel.draft;
+
+    setDraftProjectId((current) => {
+      if (current !== null && projects.some((project) => project.projectId === current && !project.worktree)) return current;
+      const last = projects.find((project) => project.projectId === lastProjectId && !project.worktree);
+
+      return last?.projectId ?? projects.find((project) => !project.worktree)?.projectId ?? null;
+    });
+  }, [target, panel.draft]);
+
+  useEffect(() => {
+    if (target !== "draft" || panel.config === null) return;
+    setPicks((current) => (current.model === null && current.runtimeMode === null ? draftPicks(panel.config) : current));
+  }, [target, panel.config]);
+
   // The hotkey opens the composer, exactly like the webview's did.
-  useEffect(() => window.overlay.onFocusComposer(() => setComposerOpen(true)), []);
+  useEffect(
+    () =>
+      window.overlay.onFocusComposer(() => {
+        setComposerOpen(true);
+        composer.current?.focus();
+      }),
+    [],
+  );
 
   const view = panel.view;
+  const draft = target === "draft";
   const pending = pendingRequests(view);
   const reply = needsReply(view);
   const running = activeRun(view);
@@ -67,11 +109,32 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const title = panelTitle(state, view?.thread ?? null);
   const project = view === null ? undefined : state.projects.find((candidate) => candidate.projectId === view.thread.projectId);
   const environment = environmentLabel(state, target, view?.thread ?? null);
+  const draftProject = panel.draft?.projects.find((candidate) => candidate.projectId === draftProjectId) ?? null;
   const offline = panel.status === "offline" || panel.status === "ended";
-  const canCompose = target !== null && target !== "draft" && !panel.remote && !offline && view !== null;
-  const folded = canCompose && settings.compactComposer && !reply && !composerOpen;
+  const unreachable = state.t3 === "offline";
+  const canCompose = target !== null && (draft || (!panel.remote && !offline && !unreachable && view !== null));
+  const folded = !draft && canCompose && settings.compactComposer && !reply && !composerOpen && text === "" && !menuOpen && !busy && !focused;
   const titleInCard = settings.titleInComposer && canCompose && !folded;
   const visible = target !== null;
+  const contextLabel = draft ? (draftProject?.title ?? "") : [project?.title, environment].filter(Boolean).join(" · ");
+  const statusLabel = draft ? "" : running !== null ? "Working" : reply ? "Waiting for you" : "";
+  const cwd = draft ? (draftProject?.workspaceRoot ?? null) : (view?.thread.cwd ?? null);
+
+  // The thread's own picks settle once T3 reports them back; until then the chips keep the pick.
+  const threadModel = view?.thread.modelSelection ?? null;
+  const threadRuntime = view?.thread.runtimeMode ?? null;
+  const settledKey = JSON.stringify([threadModel, threadRuntime]);
+
+  useEffect(() => {
+    if (draft) return;
+    setPicks((current) => {
+      if (current.model === null && current.runtimeMode === null) return current;
+      const modelSettled = current.model === null || sameSelection(current.model, threadModel);
+      const modeSettled = current.runtimeMode === null || current.runtimeMode === threadRuntime;
+
+      return modelSettled && modeSettled ? { model: null, runtimeMode: null } : current;
+    });
+  }, [draft, settledKey, threadModel, threadRuntime]);
 
   const onScroll = () => {
     const element = scroller.current;
@@ -87,6 +150,19 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     setShowToEnd(false);
     const element = scroller.current;
     element?.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  };
+
+  const onFocusChange = (next: boolean) => {
+    setFocused(next);
+
+    if (next) {
+      setComposerOpen(true);
+
+      return;
+    }
+
+    // Empty and unfocused folds back into the write button, unless a menu or the microphone holds it open.
+    if (text === "" && !menuOpen && !busy) setComposerOpen(false);
   };
 
   // A transition runs with the values of the state it moves to, so the closed state has none and closes at once.
@@ -126,7 +202,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           ...chatStyle,
           visibility: visible ? "visible" : "hidden",
           "--t3-chat-opacity": `${Math.round(state.opacity * 100)}%`,
-          "--t3-overlap": folded ? "0px" : "16px",
+          "--t3-overlap": folded || !canCompose ? "0px" : "16px",
         } as CSSProperties
       }
     >
@@ -147,11 +223,11 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
                 onOpen={() => target !== null && target !== "draft" && window.overlay.openInT3(target)}
               />
             ) : target === "draft" ? (
-              <PlaceholderCard title="New thread" text="Writing a new thread lands with the composer." />
-            ) : offline ? (
+              <DraftProjects projects={panel.draft?.projects ?? []} selected={draftProjectId} onSelect={setDraftProjectId} />
+            ) : unreachable || offline ? (
               <PlaceholderCard
-                title={panel.status === "ended" ? "T3 stream ended" : "T3 is not reachable"}
-                text={panel.reason ?? "The connection to T3 stopped."}
+                title={unreachable ? "T3 Code is not running" : panel.status === "ended" ? "T3 stream ended" : "T3 is not reachable"}
+                text={unreachable ? "Start T3 Code, then retry." : (panel.reason ?? "The connection to T3 stopped.")}
                 action={{ label: "Retry", onClick: () => window.overlay.retryPanel() }}
               />
             ) : view === null ? (
@@ -175,37 +251,33 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         )}
       </div>
 
-      {canCompose &&
-        (folded ? (
-          <button
-            type="button"
-            title="Write"
-            onClick={() => setComposerOpen(true)}
-            className={`mt-1.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--t3-message-action)] text-[var(--t3-message-action-foreground)] shadow-[inset_0_1px_#ffffff29,0_1px_2px_0_color-mix(in_oklab,var(--t3-message-action)_24%,transparent)] transition-colors hover:bg-[var(--t3-message-action-hover)] ${
-              side === "left" ? "self-start" : "self-end"
-            }`}
-          >
-            <PenLine size={14} />
-          </button>
-        ) : (
-          <div
-            className="-mt-4 flex shrink-0 flex-col rounded-2xl border glass-card"
-            style={{ borderColor: "color-mix(in srgb, var(--t3-contrast-foreground) 8%, transparent)" }}
-          >
-            {titleInCard && <p className="truncate px-[14px] pt-2 pb-0.5 text-[12px] font-semibold text-t3-fg">{title}</p>}
-            <div className={titleInCard ? "px-4 pt-2.5 pb-2" : "px-4 pt-3.5 pb-2"}>
-              <div className="flex items-center justify-between gap-2 text-[11px] text-t3-muted">
-                <span className="min-w-0 truncate">
-                  {[project?.title, environment].filter(Boolean).join(" · ")}
-                </span>
-                <span className="shrink-0">{(running !== null ? "Working" : reply ? "Waiting for you" : "")}</span>
-              </div>
-              <p className="py-2 text-[length:var(--t3-font-size-prompt)] text-t3-muted">Sending is next</p>
-              {/* The model and permission chips, the send button and the textarea land here. */}
-              <div className="flex h-8 items-center justify-end" />
-            </div>
-          </div>
-        ))}
+      {canCompose && (
+        <Composer
+          draft={draft}
+          side={side}
+          view={view}
+          config={panel.config}
+          projectId={draftProjectId}
+          cwd={cwd}
+          running={running}
+          contextLabel={contextLabel}
+          statusLabel={statusLabel}
+          title={titleInCard ? title : null}
+          folded={folded}
+          picks={picks}
+          onPicks={setPicks}
+          onTextChange={setText}
+          onFocusChange={onFocusChange}
+          onMenuChange={setMenuOpen}
+          onBusyChange={setBusy}
+          onUnfold={() => {
+            setComposerOpen(true);
+            composer.current?.focus();
+          }}
+          onSent={() => window.overlay.sent()}
+          handle={composer}
+        />
+      )}
 
       <div
         className={`absolute bottom-0 size-4 ${corner}`}

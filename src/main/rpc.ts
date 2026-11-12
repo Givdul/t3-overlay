@@ -18,6 +18,32 @@ export interface WirePayload {
   type?: string;
   commandId?: string;
   snoozedUntil?: string;
+  // The commands the panel dispatches.
+  runtimeMode?: string;
+  interactionMode?: string;
+  messageId?: string;
+  createdBy?: string;
+  text?: string;
+  attachments?: unknown[];
+  modelSelection?: unknown;
+  dispatchMode?: { type: string };
+  freshContext?: boolean;
+  requestId?: string;
+  decision?: string;
+  answers?: Record<string, string | string[]>;
+  visitedAt?: string;
+  opened?: boolean;
+  // `projects.searchEntries`
+  cwd?: string;
+  query?: string;
+  limit?: number;
+  // `orchestration.launchThread`
+  creationSource?: string;
+  projectId?: string;
+  title?: string;
+  generateTitle?: boolean;
+  workspaceStrategy?: { type: string };
+  initialMessage?: unknown;
 }
 
 /** A client frame: a request, an ack or a ping. */
@@ -222,7 +248,9 @@ function failureMessage(causes: Cause[] | undefined): string {
 }
 
 /** A thread command for T3's orchestration engine (packages/contracts, OrchestrationCommand). */
-export type ThreadCommand = { type: "thread.snooze"; threadId: string; snoozedUntil: string };
+export type ThreadCommand =
+  | { type: "thread.snooze"; threadId: string; snoozedUntil: string }
+  | { type: "thread.settle"; threadId: string };
 
 /** Sends one command over the same client the panel uses and resolves once T3 has accepted it. */
 export async function dispatchCommand(server: T3Server, token: string, command: ThreadCommand): Promise<void> {

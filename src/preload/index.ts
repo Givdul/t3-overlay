@@ -24,6 +24,16 @@ const api: OverlayApi = {
     return () => ipcRenderer.off("overlay:panel", handler);
   },
   panel: (command) => ipcRenderer.invoke("overlay:panel-command", command),
+  voiceStart: () => ipcRenderer.invoke("overlay:voice-start"),
+  voiceAudio: (pcm) => ipcRenderer.send("overlay:voice-audio", pcm),
+  voiceFinish: () => ipcRenderer.invoke("overlay:voice-finish"),
+  voiceCancel: () => ipcRenderer.send("overlay:voice-cancel"),
+  onVoiceEvent: (listener) => {
+    const handler = (_event: IpcRendererEvent, event: Parameters<typeof listener>[0]) => listener(event);
+    ipcRenderer.on("overlay:voice", handler);
+
+    return () => ipcRenderer.off("overlay:voice", handler);
+  },
   retryPanel: () => ipcRenderer.send("overlay:panel-retry"),
   openLink: (url) => ipcRenderer.send("overlay:open-link", url),
   openInT3: (target) => ipcRenderer.send("overlay:open-in-t3", target),

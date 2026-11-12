@@ -1,5 +1,7 @@
 import type {
+  DraftProject,
   PanelAttempt,
+  PanelConfig,
   PanelEvent,
   PanelEventPayload,
   PanelItem,
@@ -28,6 +30,10 @@ export interface PanelState {
   stale: boolean;
   /** The thread lives on another machine, which this client cannot reach. */
   remote: boolean;
+  /** `server.getConfig` trimmed for the composer's menus and chips. */
+  config: PanelConfig | null;
+  /** The `+` panel's project list, written by main from the local shell feed. */
+  draft: { projects: DraftProject[]; lastProjectId: string | null } | null;
 }
 
 /** A message tagged with the target it was drawn for, or a reset to that target's empty state. */
@@ -41,6 +47,8 @@ export const initialState = (targetKey: string): PanelState => ({
   sequence: 0,
   stale: false,
   remote: false,
+  config: null,
+  draft: null,
 });
 
 /**
@@ -49,9 +57,21 @@ export const initialState = (targetKey: string): PanelState => ({
  * starts from the empty state and then applies, in that order.
  */
 export function applyPanelMessage(state: PanelState, action: PanelAction): PanelState {
+  // The catalog and the draft's projects belong to the client, not to one thread: they survive a
+  // re-key, including the first message of a new target that can arrive before React re-renders.
+  if (action.kind === "message" && (action.message.kind === "config" || action.message.kind === "draft")) {
+    return applyMessage(keepClientState(state, action.targetKey), action.message);
+  }
+
   const base = state.targetKey === action.targetKey ? state : initialState(action.targetKey);
 
   return action.kind === "reset" ? base : applyMessage(base, action.message);
+}
+
+function keepClientState(state: PanelState, targetKey: string): PanelState {
+  if (state.targetKey === targetKey) return state;
+
+  return { ...initialState(targetKey), config: state.config, draft: state.draft };
 }
 
 function applyMessage(state: PanelState, message: PanelMessage): PanelState {
@@ -70,6 +90,10 @@ function applyMessage(state: PanelState, message: PanelMessage): PanelState {
       };
     case "event":
       return applyEvent(state, message.event);
+    case "config":
+      return { ...state, config: message.config };
+    case "draft":
+      return { ...state, draft: { projects: message.projects, lastProjectId: message.lastProjectId } };
     case "stale":
       return { ...state, stale: true };
   }
@@ -173,8 +197,10 @@ function applyRun(state: PanelState, view: PanelView, payload: PanelEventPayload
   if (payload.id === undefined) return state;
   const run: PanelRun = { id: payload.id, status: payload.status ?? "" };
   const runs = upsertBy(view.runs, run, (candidate) => candidate.id === run.id);
+  // A queued message becomes a turn item when its run starts; until then it is drawn from the queue.
+  const queued = run.status === "queued" ? view.queued : view.queued.filter((message) => message.runId !== run.id);
 
-  return { ...state, view: { ...view, runs, rows: refilterRows(view, runs, view.attempts, view.items) } };
+  return { ...state, view: { ...view, runs, queued, rows: refilterRows(view, runs, view.attempts, view.items) } };
 }
 
 function applyAttempt(state: PanelState, view: PanelView, payload: PanelEventPayload): PanelState {

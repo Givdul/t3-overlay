@@ -1,4 +1,13 @@
-import type { PanelCommand, PanelItemReply, PanelMessage, PanelPathsReply, PanelReply } from "../shared/panel";
+import type {
+  PanelCommand,
+  PanelItemReply,
+  PanelMessage,
+  PanelPathsReply,
+  PanelReply,
+  VoiceEvent,
+  VoiceFinishReply,
+  VoiceStartReply,
+} from "../shared/panel";
 import type { Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
 
 export interface OverlayApi {
@@ -12,6 +21,12 @@ export interface OverlayApi {
   /** Main's thread projection for the open panel: snapshots, events and status changes. */
   onPanel(listener: (message: PanelMessage) => void): () => void;
   panel(command: PanelCommand): Promise<PanelReply | PanelItemReply | PanelPathsReply>;
+  /** Starts T3's streaming dictation; main holds the media ticket and the socket. */
+  voiceStart(): Promise<VoiceStartReply>;
+  voiceAudio(pcm: ArrayBuffer): void;
+  voiceFinish(): Promise<VoiceFinishReply>;
+  voiceCancel(): void;
+  onVoiceEvent(listener: (event: VoiceEvent) => void): () => void;
   /** Reconnects the panel to T3 after it ended. */
   retryPanel(): void;
   /** Opens an http(s) link in the system browser, never inside the overlay. */

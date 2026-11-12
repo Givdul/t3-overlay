@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeTheme, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeTheme, screen, session, shell, systemPreferences, type IpcMainEvent, type Rectangle } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -21,13 +21,14 @@ import {
   type SidebarThread,
   type ThreadRef,
 } from "../shared/types";
-import type { PanelCommand, PanelMessage, PanelReply } from "../shared/panel";
+import type { PanelCommand, PanelMessage, PanelReply, VoiceFinishReply, VoiceStartReply } from "../shared/panel";
 import type { ThemeTokens } from "../shared/tokens";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
 import { ensureSession, readServer, type T3Server } from "./t3";
 import { startThreadFeed, type ThreadFeed } from "./threads";
 import { startPanel, type Panel } from "./panel";
+import { startVoice, type VoiceEvent, type VoiceStream } from "./voice";
 import { clientSettingsPath, readAppearance, resolveTheme, type Appearance } from "./theme";
 import { createTray, refreshTray } from "./tray";
 import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
@@ -47,6 +48,9 @@ let appearance: Appearance | null = null;
 let cdpTokens: Partial<ThemeTokens> | null = null;
 let feed: ThreadFeed | null = null;
 let panel: Panel | null = null;
+
+/** One recording at a time, owned by main so the media ticket stays here. */
+let voice: VoiceStream | null = null;
 
 /** This PC's T3 server while the overlay is connected to it. */
 let localServer: T3Server | null = null;
@@ -279,6 +283,12 @@ function startFeed(server: T3Server, token: string) {
     environmentId: server.environmentId,
     onMessage: sendPanelMessage,
     onAuthExpired: () => refreshSession(server),
+    lastProjectId: () => persisted.lastProjectId,
+    onLaunched: (thread, projectId) => {
+      persisted.lastProjectId = projectId;
+      save();
+      openPanel(thread);
+    },
   });
   panel.setProjects(state.projects);
   panel.setTarget(state.panel);
@@ -457,6 +467,14 @@ async function snooze(server: T3Server, thread: ThreadRef, until: Date) {
   }
 }
 
+async function settle(server: T3Server, thread: ThreadRef) {
+  try {
+    await dispatchCommand(server, await ensureSession(server), { type: "thread.settle", threadId: thread.threadId });
+  } catch (error) {
+    console.error("[t3] settle failed", error);
+  }
+}
+
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const server = state.t3 === "connected" ? localServer : null;
   const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
@@ -466,8 +484,13 @@ onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const onThisPc = server !== null && server.environmentId === thread.environmentId;
 
   Menu.buildFromTemplate([
-    // Settling went through the webview's Ctrl+Shift+S; the native panel has no Settle command yet.
-    { label: "Settle (comes with the native panel)", enabled: false },
+    {
+      label: "Settle",
+      enabled: onThisPc,
+      click: () => {
+        if (server !== null) void settle(server, thread);
+      },
+    },
     {
       // Menu tooltips only show on macOS, so a disabled item says why in its label.
       label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
@@ -527,12 +550,72 @@ onHost("overlay:open-in-t3", (_event, target: ThreadRef | "new") => {
   void shell.openExternal(url);
 });
 
-onHost("overlay:panel-retry", () => panel?.retry());
+onHost("overlay:panel-retry", () => {
+  if (panel !== null) panel.retry();
+  else void connect();
+});
 
 handleHostWith("overlay:panel-command", (command: PanelCommand) => {
   const disconnected: PanelReply = { ok: false, error: "T3 is not connected" };
 
   return panel === null ? disconnected : panel.command(command);
+});
+
+// ---------------------------------------------------------------- dictation
+
+function sendVoiceEvent(event: VoiceEvent) {
+  win?.webContents.send("overlay:voice", event);
+}
+
+handleHostWith("overlay:voice-start", async (): Promise<VoiceStartReply> => {
+  if (localServer === null) return { ok: false, error: "T3 is not connected" };
+
+  // macOS gates the microphone at the OS too; the stock Electron build carries the usage string.
+  if (process.platform === "darwin" && process.env.T3_OVERLAY_VOICE_FIXTURE === undefined) {
+    try {
+      if (!(await systemPreferences.askForMediaAccess("microphone"))) {
+        return { ok: false, error: "Microphone access is off. Allow t3-overlay in System Settings → Privacy & Security → Microphone." };
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "Microphone access failed" };
+    }
+  }
+
+  try {
+    const token = await ensureSession(localServer);
+
+    voice?.cancel();
+    const stream = startVoice({ server: localServer, token, onEvent: sendVoiceEvent });
+
+    voice = stream;
+
+    return { ok: true, ...(await stream.start()) };
+  } catch (error) {
+    voice = null;
+
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+onHost("overlay:voice-audio", (_event, pcm: ArrayBuffer) => voice?.feed(pcm));
+
+handleHostWith("overlay:voice-finish", async (): Promise<VoiceFinishReply> => {
+  const active = voice;
+
+  if (active === null) return { ok: false, error: "Voice input is not running" };
+
+  try {
+    return { ok: true, text: await active.finish() };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    voice = null;
+  }
+});
+
+onHost("overlay:voice-cancel", () => {
+  voice?.cancel();
+  voice = null;
 });
 
 onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
@@ -562,6 +645,14 @@ app.whenReady().then(() => {
   createWindow();
   createTray(trayActions);
   registerHotkeys();
+  // The page asks for the microphone; only the overlay's own window may have it.
+  session.defaultSession.setPermissionCheckHandler(
+    (contents, permission, _origin, details) => contents === win?.webContents && permission === "media" && details.mediaType === "audio",
+  );
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
+    callback(contents === win?.webContents && permission === "media" && mediaTypes.length > 0 && mediaTypes.every((kind) => kind === "audio"));
+  });
   watch(configPath(), () => {
     config = loadConfig();
     registerHotkeys();
