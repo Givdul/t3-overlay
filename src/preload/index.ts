@@ -1,12 +1,11 @@
-import { contextBridge, ipcRenderer } from "electron";
-import type { ThemeStorage } from "../shared/theme";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { OverlayState, PanelTarget, ThreadRef } from "../shared/types";
 import type { OverlayApi } from "./api";
 
 const api: OverlayApi = {
   init: () => ipcRenderer.invoke("overlay:init") as Promise<{ state: OverlayState }>,
   onState: (listener) => {
-    const handler = (_event: unknown, state: OverlayState) => listener(state);
+    const handler = (_event: IpcRendererEvent, state: OverlayState) => listener(state);
     ipcRenderer.on("overlay:state", handler);
     return () => ipcRenderer.off("overlay:state", handler);
   },
@@ -16,20 +15,18 @@ const api: OverlayApi = {
   },
   setExtent: (extent) => ipcRenderer.send("overlay:extent", extent),
   open: (target: PanelTarget | null) => ipcRenderer.send("overlay:open", target),
-  follow: (thread: ThreadRef) => ipcRenderer.send("overlay:follow", thread),
   setPopover: (popover) => ipcRenderer.send("overlay:popover", popover),
   threadMenu: (thread) => ipcRenderer.send("overlay:thread-menu", thread),
-  getThemeStorage: () => ipcRenderer.invoke("overlay:get-theme-storage") as Promise<ThemeStorage | null>,
-  onThemeStorage: (listener) => {
-    const handler = (_event: unknown, storage: ThemeStorage) => listener(storage);
-    ipcRenderer.on("overlay:theme-storage", handler);
-    return () => ipcRenderer.off("overlay:theme-storage", handler);
+  onPanel: (listener) => {
+    const handler = (_event: IpcRendererEvent, message: Parameters<typeof listener>[0]) => listener(message);
+    ipcRenderer.on("overlay:panel", handler);
+
+    return () => ipcRenderer.off("overlay:panel", handler);
   },
-  onSettle: (listener) => {
-    const handler = (_event: unknown, thread: ThreadRef) => listener(thread);
-    ipcRenderer.on("overlay:settle", handler);
-    return () => ipcRenderer.off("overlay:settle", handler);
-  },
+  panel: (command) => ipcRenderer.invoke("overlay:panel-command", command),
+  retryPanel: () => ipcRenderer.send("overlay:panel-retry"),
+  openLink: (url) => ipcRenderer.send("overlay:open-link", url),
+  openInT3: (target) => ipcRenderer.send("overlay:open-in-t3", target),
   setOpacity: (opacity: number) => ipcRenderer.send("overlay:opacity", opacity),
   setLocked: (locked: boolean) => ipcRenderer.send("overlay:lock", locked),
   setSettings: (patch) => ipcRenderer.send("overlay:settings", patch),
@@ -38,7 +35,6 @@ const api: OverlayApi = {
   hover: () => ipcRenderer.send("overlay:hover"),
   escape: () => ipcRenderer.send("overlay:escape"),
   sent: () => ipcRenderer.send("overlay:sent"),
-  reportHooks: (missing: string[]) => ipcRenderer.send("overlay:hooks", missing),
 };
 
 contextBridge.exposeInMainWorld("overlay", api);

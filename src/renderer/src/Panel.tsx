@@ -1,243 +1,93 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { defaultThemeStorage, themeApplyScript, type ThemeStorage } from "../../shared/theme";
-import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../shared/types";
-
-interface WebviewElement extends HTMLWebViewElement {
-  executeJavaScript(code: string): Promise<unknown>;
-  getURL(): string;
-  send(channel: string, ...args: unknown[]): void;
-  sendInputEvent(event: { type: "keyDown" | "keyUp"; keyCode: string; modifiers?: string[] }): void;
-}
+import { ArrowDown, PenLine } from "lucide-react";
+import { useEffect, useReducer, useRef, useState, type CSSProperties } from "react";
+import type { PanelThread } from "../../shared/panel";
+import { threadKey, type OverlaySettings, type OverlayState, type PanelTarget, type SidebarThread } from "../../shared/types";
+import { Timeline } from "./panel/Timeline";
+import { activeRun, applyPanelMessage, initialState, needsReply, pendingRequests } from "./panel/model";
 
 /**
- * Attributes passed to the webview element as written. React drops `allowpopups={true}` because it
- * doesn't know the attribute, and React's typings only accept a boolean for it.
+ * The chat panel: a title row, the thread's timeline and the composer card, all drawn here instead of
+ * inside a webview. Main owns the socket and forwards the thread's projection; this file draws it.
  */
-interface WebviewAttributes {
-  [attribute: string]: string;
-}
-
-// Without `allowpopups` Electron never calls the main process's window-open handler, so T3's links to
-// the system browser open nothing.
-const POPUPS_ALLOWED: WebviewAttributes = { allowpopups: "" };
-
-interface DidNavigateEvent extends Event {
-  url: string;
-}
-
-interface IpcMessageEvent extends Event {
-  channel: string;
-  args: unknown[];
-}
-
-/**
- * @param signInFirst On the hosted app with no machine connected yet, T3 Connect sign-in and the machine
- * list live on the home screen; afterwards machines are managed under Settings → Environments.
- */
-function routeFor(target: PanelTarget, signInFirst = false): string {
-  if (target === "draft") return "/";
-  if (target === "connect") return signInFirst ? "/" : "/settings/connections";
-  return `/${encodeURIComponent(target.environmentId)}/${encodeURIComponent(target.threadId)}`;
-}
-
-const sameOrigin = (url: string, origin: string) =>
-  URL.canParse(url) && URL.canParse(origin) && new URL(url).origin === new URL(origin).origin;
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Machines this T3 page has connected to: it caches each one's server config in IndexedDB
-// (apps/web/src/connection/storage.ts). Runs in the page.
-const KNOWN_ENVIRONMENTS_SCRIPT = `new Promise((resolve) => {
-  const request = indexedDB.open("t3code:connection-runtime");
-  request.onupgradeneeded = () => request.transaction.abort();
-  request.onerror = () => resolve(null);
-  request.onsuccess = () => {
-    const db = request.result;
-    if (!db.objectStoreNames.contains("server-config")) return resolve([]);
-    const keys = db.transaction("server-config", "readonly").objectStore("server-config").getAllKeys();
-    keys.onsuccess = () => { db.close(); resolve(keys.result); };
-    keys.onerror = () => { db.close(); resolve(null); };
-  };
-})`;
-
-/** `/<environmentId>/<threadId>` is T3's thread route. Drafts and settings live under fixed first segments. */
-function threadFromRoute(path: string): ThreadRef | null {
-  const match = /^\/([^/]+)\/([^/]+)$/.exec(path);
-  if (!match || match[1] === "draft" || match[1] === "settings") return null;
-  return { environmentId: decodeURIComponent(match[1]!), threadId: decodeURIComponent(match[2]!) };
-}
-
 export function Panel({ state, style }: { state: OverlayState; style: CSSProperties }) {
-  const webview = useRef<WebviewElement>(null) as React.RefObject<WebviewElement | null>;
-  const [ready, setReady] = useState(false);
-  const route = useRef<string | null>(null);
-  const titles = useRef(new Map<string, SidebarThread>());
-  const settling = useRef(false);
-  const [pointerInside, setPointerInside] = useState(false);
-  // The webview keeps its first URL; later moves go through T3's router so the app never reloads.
-  // A new T3 origin (T3 restarted) remounts it.
-  const [loaded, setLoaded] = useState<{ origin: string; src: string } | null>(null);
-  if (state.origin !== null && loaded?.origin !== state.origin) {
-    // Start on the draft route; the reachability check below moves to the target once loaded.
-    const path = routeFor("draft");
-    route.current = path;
-    setReady(false);
-    setLoaded({ origin: state.origin, src: `${state.origin}${path}` });
-  }
-  const initialSrc = loaded?.src ?? null;
-  // Read by listeners registered once. Electron rewrites the webview's src on every load, so it can't stand in.
-  const t3Src = useRef(initialSrc);
+  const target = state.panel;
+  const targetKey = target === null ? "none" : target === "draft" ? target : threadKey(target);
+  const threadId = target === null || target === "draft" ? null : target.threadId;
+  const [panel, dispatch] = useReducer(applyPanelMessage, targetKey, initialState);
+  /** The read-only composer stands in for the real one: it unfolds, but has nothing to type into yet. */
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [showToEnd, setShowToEnd] = useState(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const threadRef = useRef(threadId);
+  const targetRef = useRef(targetKey);
+  threadRef.current = threadId;
+  targetRef.current = targetKey;
 
-  t3Src.current = initialSrc;
+  // A new thread starts clean: no unfolded composer from the last one. Rows reset through the
+  // reducer, which tags every message with its target (see panel/model.ts).
+  useEffect(() => {
+    setComposerOpen(false);
+    setShowToEnd(false);
+    follow.current = true;
+  }, [targetKey]);
 
-  /** Whether the webview still shows T3, not a page T3 navigated to. */
-  const showsT3 = (element: WebviewElement) => t3Src.current !== null && sameOrigin(element.getURL(), t3Src.current);
+  useEffect(
+    () =>
+      window.overlay.onPanel((message) => {
+        if ("threadId" in message && message.threadId !== threadRef.current) return;
+        dispatch({ kind: "message", targetKey: targetRef.current, message });
+      }),
+    [],
+  );
 
-  for (const thread of [...state.threads, ...state.working]) {
-    titles.current.set(`${thread.environmentId}:${thread.threadId}`, thread);
-  }
+  // "Follow" while the reader is at the end; hold the position while they are reading further up.
+  useEffect(() => {
+    const element = scroller.current;
 
-  const navigate = async (path: string) => {
-    if (!webview.current || route.current === path || !showsT3(webview.current)) return;
-    route.current = path;
-    await webview.current.executeJavaScript(`history.pushState(null, "", ${JSON.stringify(path)})`);
+    if (element && follow.current) element.scrollTop = element.scrollHeight;
+  });
+
+  // An event this build cannot fold in: re-read the projection once the burst settles.
+  useEffect(() => {
+    if (!panel.stale) return;
+    const timer = setTimeout(() => void window.overlay.panel({ type: "reload" }), 500);
+
+    return () => clearTimeout(timer);
+  }, [panel.stale, panel.sequence]);
+
+  // The hotkey opens the composer, exactly like the webview's did.
+  useEffect(() => window.overlay.onFocusComposer(() => setComposerOpen(true)), []);
+
+  const view = panel.view;
+  const pending = pendingRequests(view);
+  const reply = needsReply(view);
+  const running = activeRun(view);
+  const { side, settings } = state;
+  const title = panelTitle(state, view?.thread ?? null);
+  const project = view === null ? undefined : state.projects.find((candidate) => candidate.projectId === view.thread.projectId);
+  const environment = environmentLabel(state, target, view?.thread ?? null);
+  const offline = panel.status === "offline" || panel.status === "ended";
+  const canCompose = target !== null && target !== "draft" && !panel.remote && !offline && view !== null;
+  const folded = canCompose && settings.compactComposer && !reply && !composerOpen;
+  const titleInCard = settings.titleInComposer && canCompose && !folded;
+  const visible = target !== null;
+
+  const onScroll = () => {
+    const element = scroller.current;
+
+    if (!element) return;
+    const atEnd = element.scrollTop + element.clientHeight >= element.scrollHeight - 8;
+    follow.current = atEnd;
+    setShowToEnd(!atEnd);
   };
 
-  useEffect(() => {
-    const element = webview.current;
-
-    if (!element || initialSrc === null) return;
-    // The thread title, theme and page scripts go only to T3's own page, not to a page it navigated to.
-    const onT3 = (url: string) => sameOrigin(url, initialSrc);
-    const onReady = () => {
-      setReady(onT3(element.getURL()));
-
-      if (onT3(element.getURL())) element.send("opacity", state.opacity);
-    };
-
-    const onNavigate = (event: Event) => {
-      // SAFETY: Electron fires did-navigate on a <webview> with the new top-level URL.
-      if (!onT3((event as DidNavigateEvent).url)) setReady(false);
-    };
-    const onMessage = (event: Event) => {
-      const { channel, args } = event as IpcMessageEvent;
-
-      if (!onT3(element.getURL())) return;
-      if (channel === "escape") window.overlay.escape();
-      if (channel === "sent") window.overlay.sent();
-      if (channel === "hooks") window.overlay.reportHooks(args[0] as string[]);
-
-      if (channel === "pointer") setPointerInside(args[0] === true);
-      if (channel === "route" && !settling.current) {
-        const path = args[0] as string;
-        route.current = path;
-        const thread = threadFromRoute(path);
-        if (thread) window.overlay.follow(thread);
-      }
-      if (channel === "theme") {
-        for (const [name, value] of Object.entries(args[0] as Record<string, string>)) {
-          document.documentElement.style.setProperty(`--t3-${name}`, value);
-        }
-      }
-    };
-    element.addEventListener("dom-ready", onReady);
-    element.addEventListener("did-navigate", onNavigate);
-    element.addEventListener("ipc-message", onMessage);
-    return () => {
-      element.removeEventListener("dom-ready", onReady);
-      element.removeEventListener("did-navigate", onNavigate);
-      element.removeEventListener("ipc-message", onMessage);
-    };
-  }, [initialSrc]);
-
-  useEffect(() => {
-    if (ready) webview.current?.send("opacity", state.opacity);
-  }, [ready, state.opacity]);
-
-  // A hidden webview reports no pointer leaving it, so a closed panel forgets the pointer.
-  useEffect(() => {
-    if (state.panel === null) setPointerInside(false);
-  }, [state.panel]);
-
-  // "Custom theme" follows the theme picked in the desktop app, live. Needs T3's debugging port.
-  const [desktopTheme, setDesktopTheme] = useState<ThemeStorage | null>(null);
-  useEffect(() => {
-    const stop = window.overlay.onThemeStorage(setDesktopTheme);
-    void window.overlay.getThemeStorage().then(setDesktopTheme);
-    return stop;
-  }, []);
-  const { customTheme } = state.settings;
-  useEffect(() => {
-    const storage = customTheme ? desktopTheme : defaultThemeStorage(desktopTheme);
-    if (ready && storage) void webview.current?.executeJavaScript(themeApplyScript(storage));
-  }, [ready, desktopTheme, customTheme]);
-
-  // A thread on a machine this page has no connection to renders as an empty page, so check first.
-  const [unreachable, setUnreachable] = useState<SidebarThread | ThreadRef | null>(null);
-  useEffect(() => {
-    if (!ready || !state.panel) return;
-    const target = state.panel;
-    void (async () => {
-      const known = (await webview.current?.executeJavaScript(KNOWN_ENVIRONMENTS_SCRIPT)) as string[] | null | undefined;
-      if (typeof target === "object" && known && !known.includes(target.environmentId)) {
-        setUnreachable(titles.current.get(`${target.environmentId}:${target.threadId}`) ?? target);
-        return;
-      }
-      setUnreachable(null);
-      await navigate(routeFor(target, state.panelHosted && known?.length === 0));
-    })();
-  }, [ready, state.panel]);
-
-  // The guest unfolds the composer and focuses T3's editor.
-  useEffect(
-    () =>
-      window.overlay.onFocusComposer(() => {
-        webview.current?.focus();
-        webview.current?.send("focus-composer");
-      }),
-    [],
-  );
-
-  // Settling goes through T3's own Ctrl+Shift+S binding, so it works for threads on every machine.
-  useEffect(
-    () =>
-      window.overlay.onSettle(async (thread: ThreadRef) => {
-        const element = webview.current;
-        if (!element || settling.current) return;
-        settling.current = true;
-        const back = route.current;
-        try {
-          await navigate(routeFor(thread));
-          await wait(500);
-
-          if (!showsT3(element)) return;
-          element.sendInputEvent({ type: "keyDown", keyCode: "S", modifiers: ["control", "shift"] });
-          element.sendInputEvent({ type: "keyUp", keyCode: "S", modifiers: ["control", "shift"] });
-          await wait(300);
-          if (back && back !== routeFor(thread)) await navigate(back);
-        } finally {
-          settling.current = false;
-        }
-      }),
-    [],
-  );
-
-  // The title is drawn inside T3's page, above the chat history or atop the composer card.
-  const title = panelTitle(state.panel, titles.current);
-  const { titleInComposer, textOutline, compactComposer } = state.settings;
-  // A thread waiting on an approval or an answer keeps its composer open.
-  const target = state.panel;
-  const threadState =
-    typeof target === "object" && target !== null ? titles.current.get(`${target.environmentId}:${target.threadId}`)?.state : undefined;
-  const needsReply = threadState === "approval" || threadState === "input";
-  const { side } = state;
-  useEffect(() => {
-    if (ready) webview.current?.send("chrome", { title, titleInComposer, textOutline, compactComposer, needsReply, side });
-  }, [ready, title, titleInComposer, textOutline, compactComposer, needsReply, side]);
-
-  if (initialSrc === null) return null;
-
-  const visible = state.panel !== null;
+  const scrollToEnd = () => {
+    follow.current = true;
+    setShowToEnd(false);
+    const element = scroller.current;
+    element?.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  };
 
   // A transition runs with the values of the state it moves to, so the closed state has none and closes at once.
   // The slide starts inside the gap to the sidebar, so the panel never draws over it.
@@ -245,46 +95,127 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     ? state.panelEntrance === "slide"
       ? "transition-[opacity,translate] duration-220 ease-out"
       : ""
-    : `opacity-0 ${state.side === "left" ? "motion-safe:-translate-x-1.5" : "motion-safe:translate-x-1.5"}`;
+    : `opacity-0 ${side === "left" ? "motion-safe:-translate-x-1.5" : "motion-safe:translate-x-1.5"}`;
 
-  const corner = state.side === "left" ? "right-0 cursor-nwse-resize" : "left-0 -scale-x-100 cursor-nesw-resize";
+  const corner = side === "left" ? "right-0 cursor-nwse-resize" : "left-0 -scale-x-100 cursor-nesw-resize";
+
+  // The chat window fades with the opacity slider, borders included; the composer card keeps its glass.
+  // SAFETY: these are CSS custom properties, which React writes through as strings; the stylesheet
+  // reads them inside color-mix() below.
+  const chatStyle = {
+    "--t3-chat-bg": "color-mix(in srgb, var(--t3-background) var(--t3-chat-opacity), transparent)",
+    "--t3-chat-border": "color-mix(in srgb, var(--t3-contrast-border) var(--t3-chat-opacity), transparent)",
+  } as CSSProperties;
+
+  const historyClass = [
+    "panel-scroll h-full w-full overflow-y-auto rounded-b-[12px] border bg-[var(--t3-chat-bg)] border-[var(--t3-chat-border)]",
+    titleInCard ? "rounded-t-[12px] border-t" : "border-t-0",
+    canCompose && !folded ? "rounded-b-none border-b-0" : "",
+  ].join(" ");
 
   return (
-    <div className={`flex flex-col ${entrance}`} style={{ ...style, visibility: visible ? "visible" : "hidden" }}>
-      <webview
-        key={initialSrc}
-        ref={webview}
-        src={initialSrc}
-        partition="persist:t3"
-        {...POPUPS_ALLOWED}
-        className={`min-h-0 flex-1 ${unreachable ? "invisible" : ""}`}
-      />
-      {unreachable && (
-        <div className="absolute inset-0 flex items-center justify-center p-6">
-          <div className="flex max-w-72 flex-col items-center gap-3 rounded-xl border border-t3-border bg-t3-popover p-4 text-center shadow-xl shadow-black/40">
-            <p className="text-[13px] text-t3-fg">
-              {"environmentLabel" in unreachable ? unreachable.environmentLabel : "This machine"} isn't reachable from the
-              overlay right now. It may be offline, or not connected here yet.
-            </p>
-            <button
-              type="button"
-              className="rounded-lg bg-t3-accent px-3 py-1.5 text-[13px] text-t3-fg hover:bg-t3-fg/15"
-              onClick={() => window.overlay.open("connect")}
-            >
-              Open environments
-            </button>
+    <div
+      className={`group/chat flex min-h-0 flex-col ${entrance} ${outlineClass(settings.textOutline)} ${
+        canCompose && !folded ? "pb-4" : ""
+      }`}
+      // SAFETY: React passes custom properties through untouched; the CSS reads them as numbers and
+      // percentages, and the style's other keys are the panel's placement from App.tsx.
+      style={
+        {
+          ...style,
+          ...chatStyle,
+          visibility: visible ? "visible" : "hidden",
+          "--t3-chat-opacity": `${Math.round(state.opacity * 100)}%`,
+          "--t3-overlap": folded ? "0px" : "16px",
+        } as CSSProperties
+      }
+    >
+      {!titleInCard && <TitleRow title={title} />}
+
+      <div className="relative flex min-h-0 flex-1">
+        <div
+          ref={scroller}
+          onScroll={onScroll}
+          className={historyClass}
+          style={{ direction: side === "left" ? "rtl" : "ltr" }}
+        >
+          {/* The inner lane flips back to LTR, and its tail leaves room for the composer's overlap. */}
+          <div style={{ direction: "ltr" }} className="px-3 pt-3">
+            {panel.remote ? (
+              <MachineCard
+                machine={environment}
+                onOpen={() => target !== null && target !== "draft" && window.overlay.openInT3(target)}
+              />
+            ) : target === "draft" ? (
+              <PlaceholderCard title="New thread" text="Writing a new thread lands with the composer." />
+            ) : offline ? (
+              <PlaceholderCard
+                title={panel.status === "ended" ? "T3 stream ended" : "T3 is not reachable"}
+                text={panel.reason ?? "The connection to T3 stopped."}
+                action={{ label: "Retry", onClick: () => window.overlay.retryPanel() }}
+              />
+            ) : view === null ? (
+              <p className="py-2 text-center text-[11px] text-t3-muted">Loading the thread…</p>
+            ) : (
+              <Timeline view={view} pending={pending} onLink={(url) => window.overlay.openLink(url)} />
+            )}
           </div>
+          <div aria-hidden style={{ height: "calc(12px + var(--t3-overlap))" }} />
         </div>
-      )}
+
+        {showToEnd && (
+          <button
+            type="button"
+            onClick={scrollToEnd}
+            title="Scroll to end"
+            className={`absolute bottom-[calc(12px+var(--t3-overlap))] ${side === "left" ? "right-3.5" : "left-3.5"} z-10 flex size-7 items-center justify-center rounded-full border border-[var(--t3-contrast-border)] bg-[var(--t3-popover)] text-t3-fg shadow-lg shadow-black/30`}
+          >
+            <ArrowDown size={13} />
+          </button>
+        )}
+      </div>
+
+      {canCompose &&
+        (folded ? (
+          <button
+            type="button"
+            title="Write"
+            onClick={() => setComposerOpen(true)}
+            className={`mt-1.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--t3-message-action)] text-[var(--t3-message-action-foreground)] shadow-[inset_0_1px_#ffffff29,0_1px_2px_0_color-mix(in_oklab,var(--t3-message-action)_24%,transparent)] transition-colors hover:bg-[var(--t3-message-action-hover)] ${
+              side === "left" ? "self-start" : "self-end"
+            }`}
+          >
+            <PenLine size={14} />
+          </button>
+        ) : (
+          <div
+            className="-mt-4 flex shrink-0 flex-col rounded-2xl border glass-card"
+            style={{ borderColor: "color-mix(in srgb, var(--t3-contrast-foreground) 8%, transparent)" }}
+          >
+            {titleInCard && <p className="truncate px-[14px] pt-2 pb-0.5 text-[12px] font-semibold text-t3-fg">{title}</p>}
+            <div className={titleInCard ? "px-4 pt-2.5 pb-2" : "px-4 pt-3.5 pb-2"}>
+              <div className="flex items-center justify-between gap-2 text-[11px] text-t3-muted">
+                <span className="min-w-0 truncate">
+                  {[project?.title, environment].filter(Boolean).join(" · ")}
+                </span>
+                <span className="shrink-0">{(running !== null ? "Working" : reply ? "Waiting for you" : "")}</span>
+              </div>
+              <p className="py-2 text-[length:var(--t3-font-size-prompt)] text-t3-muted">Sending is next</p>
+              {/* The model and permission chips, the send button and the textarea land here. */}
+              <div className="flex h-8 items-center justify-end" />
+            </div>
+          </div>
+        ))}
+
       <div
-        className={`group absolute bottom-0 size-4 ${corner}`}
+        className={`absolute bottom-0 size-4 ${corner}`}
         onMouseDown={(event) => {
           if (event.button !== 0) return;
           window.overlay.dragStart("resize");
           window.addEventListener("mouseup", () => window.overlay.dragEnd(), { once: true });
         }}
       >
-        <ResizeGrip shown={pointerInside} />
+        <ResizeGrip />
       </div>
     </div>
   );
@@ -292,27 +223,106 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
 /**
  * Two diagonal strokes in the bottom-right corner; the corner mirrors them on the left. White with a dark
- * outline, so they read over any game scenery when the chat background is fully transparent.
+ * outline, so they read over any game scenery when the chat background is fully transparent. Shown while
+ * the pointer is over the chat.
  */
-function ResizeGrip({ shown }: { shown: boolean }) {
+function ResizeGrip() {
   return (
     <svg
       viewBox="0 0 16 16"
       aria-hidden
-      className={`size-full text-white drop-shadow-[0_0_1px_rgb(0_0_0/0.9)] motion-safe:transition-opacity motion-safe:duration-150 ${
-        shown ? "opacity-80" : "opacity-0"
-      } group-hover:opacity-100`}
+      className="size-full text-white opacity-0 drop-shadow-[0_0_1px_rgb(0_0_0/0.9)] transition-opacity duration-150 group-hover/chat:opacity-80"
     >
       <path d="M13 5 5 13M13 9.5 9.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
     </svg>
   );
 }
 
-function panelTitle(target: PanelTarget | null, known: Map<string, SidebarThread>): string {
+/** WoW-style text outline classes; main/store.ts parses the saved value into one of the three. */
+function outlineClass(outline: OverlaySettings["textOutline"]): string {
+  return outline === "off" ? "" : `text-outline-${outline}`;
+}
+
+function TitleRow({ title }: { title: string }) {
+  return (
+    <div
+      className="h-[34px] shrink-0 truncate rounded-t-[12px] border border-[var(--t3-chat-border)] bg-[var(--t3-chat-bg)] px-3 text-[13px] leading-[32px] font-semibold text-t3-fg"
+      style={{ borderBottomColor: "color-mix(in srgb, var(--t3-contrast-border) 50%, transparent)" }}
+    >
+      {title}
+    </div>
+  );
+}
+
+function MachineCard({ machine, onOpen }: { machine: string; onOpen: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-xl border border-[var(--t3-contrast-border)] bg-[var(--t3-popover)] p-4 text-center">
+      <p className="text-[13px] text-t3-fg">This thread is on {machine}.</p>
+      <p className="text-[11px] text-t3-muted">Only T3 Code itself can open threads on another machine.</p>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="rounded-lg bg-[var(--t3-accent)] px-3 py-1.5 text-[13px] text-t3-fg hover:bg-[color-mix(in_srgb,var(--t3-contrast-foreground)_15%,transparent)]"
+      >
+        Open in T3
+      </button>
+    </div>
+  );
+}
+
+function PlaceholderCard({
+  title,
+  text,
+  action,
+}: {
+  title: string;
+  text: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-[var(--t3-contrast-border)] bg-[var(--t3-popover)] p-4 text-center">
+      <p className="text-[13px] text-t3-fg">{title}</p>
+      <p className="text-[11px] text-t3-muted">{text}</p>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          className="rounded-lg bg-[var(--t3-accent)] px-3 py-1.5 text-[13px] text-t3-fg hover:bg-[color-mix(in_srgb,var(--t3-contrast-foreground)_15%,transparent)]"
+        >
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function knownThread(state: OverlayState, target: PanelTarget | null): SidebarThread | undefined {
+  if (target === null || target === "draft") return undefined;
+
+  return [...state.threads, ...state.working].find(
+    (thread) => thread.environmentId === target.environmentId && thread.threadId === target.threadId,
+  );
+}
+
+/** `title  ·  project · environment`, the row the webview's title used to show. */
+function panelTitle(state: OverlayState, thread: PanelThread | null): string {
+  const target = state.panel;
   if (target === null) return "";
   if (target === "draft") return "New thread";
-  if (target === "connect") return "Connect machines";
-  const thread = known.get(`${target.environmentId}:${target.threadId}`);
-  if (!thread) return "Thread";
-  return [thread.title, [thread.projectName, thread.environmentLabel].filter(Boolean).join(" · ")].filter(Boolean).join("  ·  ");
+  const known = knownThread(state, target);
+  const project = state.projects.find((candidate) => candidate.projectId === thread?.projectId);
+  const heading = thread?.title || known?.title || "Thread";
+  const meta = [project?.title ?? known?.projectName ?? "", known?.environmentLabel ?? "This PC"].filter(Boolean).join(" · ");
+
+  return [heading, meta].filter(Boolean).join("  ·  ");
+}
+
+function environmentLabel(state: OverlayState, target: PanelTarget | null, thread: PanelThread | null): string {
+  const known = knownThread(state, target);
+
+  if (known !== undefined) return known.environmentLabel;
+
+  if (target !== null && target !== "draft" && thread === null) return target.environmentId;
+
+  return "This PC";
 }

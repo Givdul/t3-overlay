@@ -1,4 +1,4 @@
-import type { ThemeStorage } from "../shared/theme";
+import type { PanelCommand, PanelItemReply, PanelMessage, PanelPathsReply, PanelReply } from "../shared/panel";
 import type { Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
 
 export interface OverlayApi {
@@ -7,13 +7,17 @@ export interface OverlayApi {
   onFocusComposer(listener: () => void): () => void;
   setExtent(extent: Partial<Extent>): void;
   open(target: PanelTarget | null): void;
-  /** T3 moved to this thread on its own (a draft became a thread). Ignored while the panel is closed. */
-  follow(thread: ThreadRef): void;
   setPopover(popover: Popover | null): void;
   threadMenu(thread: ThreadRef): void;
-  onSettle(listener: (thread: ThreadRef) => void): () => void;
-  getThemeStorage(): Promise<ThemeStorage | null>;
-  onThemeStorage(listener: (storage: ThemeStorage) => void): () => void;
+  /** Main's thread projection for the open panel: snapshots, events and status changes. */
+  onPanel(listener: (message: PanelMessage) => void): () => void;
+  panel(command: PanelCommand): Promise<PanelReply | PanelItemReply | PanelPathsReply>;
+  /** Reconnects the panel to T3 after it ended. */
+  retryPanel(): void;
+  /** Opens an http(s) link in the system browser, never inside the overlay. */
+  openLink(url: string): void;
+  /** Brings T3 Code forward on a thread, or on a new one. */
+  openInT3(target: ThreadRef | "new"): void;
   setOpacity(opacity: number): void;
   setLocked(locked: boolean): void;
   setSettings(patch: Partial<OverlaySettings>): void;
@@ -22,7 +26,6 @@ export interface OverlayApi {
   hover(): void;
   escape(): void;
   sent(): void;
-  reportHooks(missing: string[]): void;
 }
 
 declare global {

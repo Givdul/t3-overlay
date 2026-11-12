@@ -157,8 +157,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,
-    state.source === "local" ? "Only this PC: T3 is running without overlay support (see tray)" : null,
-    state.layoutChanged ? "T3 layout changed: some chrome may show in the panel" : null,
+    state.source === "local" ? "Only this PC: T3 is running without its debug port (see tray)" : null,
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
   ].filter((warning) => warning !== null);
 
