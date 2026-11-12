@@ -145,6 +145,9 @@ export function Composer(props: ComposerProps) {
   notify.current = props;
 
   const setDraftText = (value: string, caret: number) => {
+    // Kept in step eagerly: a transcript is inserted and then sent in the same tick, before React has
+    // rendered the new text, so a snapshot taken from the ref would miss it.
+    textRef.current = value;
     setText(value);
     setCursor(caret);
     props.onTextChange(value);
@@ -199,6 +202,10 @@ export function Composer(props: ComposerProps) {
   // A dead socket or the panel closing must release the microphone.
   useEffect(
     () => () => {
+      // Unmounting is a cancel, so a microphone that opens after this is let go below.
+      dictationGeneration.current += 1;
+      window.overlay.voiceCancel();
+
       for (const url of imageUrls.current) URL.revokeObjectURL(url);
       imageUrls.current = [];
       void stopRecording();
@@ -233,8 +240,10 @@ export function Composer(props: ComposerProps) {
       return;
     }
 
+    let capture: PcmRecording;
+
     try {
-      recording.current = await startPcmRecording((pcm) => window.overlay.voiceAudio(pcm));
+      capture = await startPcmRecording((pcm) => window.overlay.voiceAudio(pcm));
     } catch (captureError) {
       window.overlay.voiceCancel();
       setDictation({ ...IDLE_DICTATION, error: captureError instanceof Error ? captureError.message : "Could not start the microphone." });
@@ -242,6 +251,14 @@ export function Composer(props: ComposerProps) {
       return;
     }
 
+    // Cancelled or unmounted while the microphone was opening: stop it rather than record into the void.
+    if (generation !== dictationGeneration.current) {
+      await capture.stop().catch(() => undefined);
+
+      return;
+    }
+
+    recording.current = capture;
     setDictation({ ...IDLE_DICTATION, phase: "recording", startedAt: Date.now() });
   }
 

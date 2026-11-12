@@ -2,8 +2,8 @@ import type { T3Server } from "./t3";
 
 // Client for T3's Effect RPC socket (effect/unstable/rpc, JSON serialization).
 // One frame is a JSON object or an array of them. Every stream Chunk must be acked, or the server
-// stops sending after a handful of chunks. One socket carries one shell feed, one thread
-// subscription and any number of unary calls.
+// stops sending after a handful of chunks. Each connection carries one shell feed or one thread
+// subscription, plus any number of unary calls on that socket.
 //
 // `connect` is generic over the stream value and request reply types: each caller names the slice of
 // T3's contract it reads, and main decodes it there. Nothing here inspects a payload.
@@ -111,12 +111,15 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
   let closed = false;
   const streams = new Map<string, StreamHandlers<V>>();
   const requests = new Map<string, { resolve: (value: R) => void; reject: (error: Error) => void }>();
-  const ping = setInterval(() => send({ _tag: "Ping" }), 10_000);
+  // Armed once the socket opens: a refused connect never creates a timer to leak.
+  let ping: NodeJS.Timeout | undefined;
 
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener("error", () => reject(new Error("socket error")), { once: true });
   });
+
+  ping = setInterval(() => send({ _tag: "Ping" }), 10_000);
 
   function send(frame: WireFrame) {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
@@ -172,7 +175,11 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
       const pending = requests.get(requestId);
       requests.delete(requestId);
 
-      if (pending !== undefined && exit.value !== undefined) pending.resolve(exit.value);
+      if (pending !== undefined) {
+        // SAFETY: T3 answers a unary call on the Exit frame with that call's reply type (this connection's
+        // R); a Success with no `value` is a command that replies with nothing, and still resolves.
+        pending.resolve(exit.value as R);
+      }
 
       return;
     }

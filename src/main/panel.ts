@@ -316,6 +316,10 @@ export interface Panel {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A thread gets its first try plus three retries; each waits a little longer than the last. */
+const RETRY_LIMIT = 3;
+const RETRY_DELAY_MS = 1000;
+
 /** Long tool output is fetched per row instead; an event stream must not carry megabytes. */
 const OUTPUT_LIMIT = 8000;
 
@@ -334,12 +338,18 @@ export function startPanel(options: PanelOptions): Panel {
   let view: PanelView | null = null;
   /** A thread is visited once per time the panel opens it, not once per reconnect. */
   let visited = false;
+  /**
+   * Failed attempts at the open thread, across reconnects. Only `synchronized` clears it: a stream T3
+   * refuses closes at once, and resetting the budget there would retry it forever.
+   */
+  let failures = 0;
 
   function setTarget(next: PanelTarget | null) {
     if (sameTarget(next, target)) return;
     target = next;
     view = null;
     visited = false;
+    failures = 0;
     stopSubscription();
     lastSequence = 0;
 
@@ -386,47 +396,20 @@ export function startPanel(options: PanelOptions): Panel {
 
     options.onMessage({ kind: "status", status: "connecting" });
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      if (attempt > 0) await delay(1000);
-
+    while (failures <= RETRY_LIMIT) {
       if (current !== generation) return;
 
+      // A retry waits, so a thread T3 refuses is asked three times over a few seconds, not in a loop.
+      if (failures > 0) {
+        await delay(RETRY_DELAY_MS * failures);
+
+        if (current !== generation) return;
+      }
+
+      let connection: T3Rpc<WireStreamItem, WireReply>;
+
       try {
-        const connection = await connect<WireStreamItem, WireReply>(options.server, options.token);
-
-        if (current !== generation) {
-          connection.close();
-
-          return;
-        }
-
-        rpc = connection;
-        const payload: WirePayload = { threadId, requestCompletionMarker: true };
-
-        if (afterSequence !== null) payload.afterSequence = afterSequence;
-        stopStream = connection.stream("orchestration.subscribeThread", payload, {
-          onValue: (value) => {
-            if (current === generation) onStreamValue(threadId, value);
-          },
-          onClose: (why) => {
-            if (current !== generation) return;
-            // The subscription is gone: try to resume right after the last event already forwarded.
-            connection.close();
-            console.warn("[panel] thread stream closed:", why);
-            void subscribe(threadId, lastSequence > 0 ? lastSequence : null);
-          },
-        });
-        void loadConfig(connection);
-
-        if (!visited) {
-          visited = true;
-          // T3's own "opened": it clears the thread's unread mark when the panel shows it.
-          void dispatchOn(connection, { type: "thread.visit", threadId, visitedAt: new Date().toISOString(), opened: true }).catch(
-            (cause: unknown) => console.warn("[panel] thread.visit failed", cause),
-          );
-        }
-
-        return;
+        connection = await connect<WireStreamItem, WireReply>(options.server, options.token);
       } catch (error) {
         if (error instanceof AuthExpiredError) {
           options.onAuthExpired();
@@ -436,7 +419,54 @@ export function startPanel(options: PanelOptions): Panel {
         }
 
         reason = error instanceof Error ? error.message : String(error);
+        failures += 1;
+
+        continue;
       }
+
+      if (current !== generation) {
+        connection.close();
+
+        return;
+      }
+
+      rpc = connection;
+      const payload: WirePayload = { threadId, requestCompletionMarker: true };
+      // A resume starts after the last event already forwarded, wherever this attempt began.
+      const resumeAfter = lastSequence > 0 ? lastSequence : afterSequence;
+
+      if (resumeAfter !== null) payload.afterSequence = resumeAfter;
+
+      // The stream's close is awaited rather than restarting `subscribe`: a failure has to spend the same
+      // retry budget a refused connect does, or a thread T3 cannot load reconnects without end.
+      const closed = new Promise<string>((resolve) => {
+        stopStream = connection.stream("orchestration.subscribeThread", payload, {
+          onValue: (value) => {
+            if (current === generation) onStreamValue(threadId, value);
+          },
+          onClose: resolve,
+        });
+      });
+
+      void loadConfig(connection);
+
+      if (!visited) {
+        visited = true;
+        // T3's own "opened": it clears the thread's unread mark when the panel shows it.
+        void dispatchOn(connection, { type: "thread.visit", threadId, visitedAt: new Date().toISOString(), opened: true }).catch(
+          (cause: unknown) => console.warn("[panel] thread.visit failed", cause),
+        );
+      }
+
+      const why = await closed;
+
+      if (current !== generation) return;
+      connection.close();
+      stopStream = null;
+      rpc = null;
+      console.warn("[panel] thread stream closed:", why);
+      reason = why;
+      failures += 1;
     }
 
     options.onMessage({ kind: "status", status: "ended", reason: reason === "" ? "T3's stream closed" : reason });
@@ -500,6 +530,7 @@ export function startPanel(options: PanelOptions): Panel {
       }
 
       case "synchronized":
+        failures = 0;
         options.onMessage({ kind: "status", status: "live" });
 
         return;
@@ -548,7 +579,7 @@ export function startPanel(options: PanelOptions): Panel {
     await dispatchOn(rpc, command);
   }
 
-  async function refuse(reason: string): Promise<PanelReply> {
+  function refuse(reason: string): PanelReply {
     return { ok: false, error: reason };
   }
 
@@ -753,11 +784,11 @@ export function startPanel(options: PanelOptions): Panel {
     command,
     retry() {
       if (target === null || target === "draft" || target.environmentId !== options.environmentId) return;
+      failures = 0;
       stopSubscription();
       void subscribe(target.threadId, lastSequence > 0 ? lastSequence : null);
     },
     stop() {
-      generation += 1;
       stopSubscription();
       target = null;
       view = null;

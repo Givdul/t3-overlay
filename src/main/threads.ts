@@ -25,12 +25,12 @@ export interface FeedOptions {
 /** Thread list for this PC only, from the local server's shell stream. */
 export function startLocalFeed(options: FeedOptions): ThreadFeed {
   let stopStream: (() => void) | null = null;
+  let rpc: T3Rpc<ShellItemLike, never> | null = null;
   let stopped = false;
 
   void (async () => {
     try {
       const model = new ShellModel(options.server.environmentId, options.server.label);
-      let rpc: T3Rpc<ShellItemLike, never> | null = null;
 
       rpc = await connect<ShellItemLike, never>(options.server, options.token);
 
@@ -69,6 +69,9 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
     stop() {
       stopped = true;
       stopStream?.();
+      // The shell socket is this feed's own: stopping the feed must not leave it open.
+      rpc?.close();
+      rpc = null;
     },
   };
 }

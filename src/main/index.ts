@@ -224,7 +224,20 @@ function applyTheme() {
 
 // ---------------------------------------------------------------- T3 connection
 
+/** One pending reconnect at a time: a Retry pressed while T3 is offline must not stack another loop. */
+let reconnectTimer: NodeJS.Timeout | null = null;
+
+function scheduleConnect() {
+  if (reconnectTimer !== null) return;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connect();
+  }, 5000);
+}
+
 async function connect() {
+  clearReconnect();
   const server = await readServer();
   localServer = server;
   if (server === null) {
@@ -233,7 +246,7 @@ async function connect() {
     panel?.stop();
     panel = null;
     update({ t3: "offline", source: "none", threads: [], working: [] });
-    setTimeout(connect, 5000);
+    scheduleConnect();
     return;
   }
   try {
@@ -245,8 +258,15 @@ async function connect() {
   } catch (error) {
     console.error("[t3] connect failed", error);
     update({ t3: "offline" });
-    setTimeout(connect, 5000);
+    scheduleConnect();
   }
+}
+
+function clearReconnect() {
+  if (reconnectTimer === null) return;
+
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
 /** A fresh token after T3 rejected this one: the feed and the panel reconnect with it. */
@@ -273,7 +293,7 @@ function startFeed(server: T3Server, token: string) {
     onLost: () => {
       feed = null;
       update({ t3: "offline", source: "none", threads: [], working: [] });
-      setTimeout(connect, 5000);
+      scheduleConnect();
     },
   });
   panel = startPanel({
@@ -585,12 +605,18 @@ handleHostWith("overlay:voice-start", async (): Promise<VoiceStartReply> => {
     const stream = startVoice({ server: localServer, token, onEvent: sendVoiceEvent });
 
     voice = stream;
-    await stream.start();
+
+    try {
+      await stream.start();
+    } catch (error) {
+      // A cancel during the start has already let this stream go; only clear our own registration.
+      if (voice === stream) voice = null;
+
+      throw error;
+    }
 
     return { ok: true };
   } catch (error) {
-    voice = null;
-
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 });

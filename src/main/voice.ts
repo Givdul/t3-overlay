@@ -38,7 +38,15 @@ const OPTIONS: SpeechOptions = {
 };
 
 const READY_TIMEOUT_MS = 30_000;
-const FINISH_TIMEOUT_MS = 120_000;
+
+// T3's sending rules: 64 KB chunks, two in flight, and five minutes of audio in total
+// (packages/contracts/src/speech.ts; client-runtime/src/voice-input/stream.ts).
+const MAX_CHUNK_BYTES = 16_000 * 4;
+const MAX_QUEUED_BYTES = MAX_CHUNK_BYTES * 5 * 60;
+const MAX_IN_FLIGHT = 2;
+
+// The server answers within this window, or the stream is dead.
+const DEADLINE_MS = 120_000;
 
 interface StatusReply {
   supported?: boolean;
@@ -58,10 +66,17 @@ export function startVoice(options: VoiceOptions): VoiceStream {
   let ready = false;
   let failure: Error | null = null;
   let finishSent = false;
+  let finishing = false;
   let cancelled = false;
   let resolveFinal: ((text: string) => void) | null = null;
   let rejectFinal: ((error: Error) => void) | null = null;
   let timer: NodeJS.Timeout | undefined;
+  /** Audio the server has not taken yet, split into chunks it accepts. */
+  const queue: Uint8Array<ArrayBuffer>[] = [];
+  let queuedBytes = 0;
+  /** Byte counts of the chunks the server has not acknowledged with an `update` yet. */
+  const inFlight: number[] = [];
+  let inFlightBytes = 0;
 
   const final = new Promise<string>((resolve, reject) => {
     resolveFinal = resolve;
@@ -102,15 +117,46 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     }
   }
 
+  /** Sends what the server's window has room for; `finish` leaves only once every byte has landed. */
+  function pump() {
+    if (!ready || cancelled || finishSent) return;
+
+    while (!cancelled && inFlight.length < MAX_IN_FLIGHT && queue.length > 0) {
+      const chunk = queue.shift()!;
+
+      inFlight.push(chunk.byteLength);
+      inFlightBytes += chunk.byteLength;
+      queuedBytes -= chunk.byteLength;
+      armTimeout(DEADLINE_MS, "Live transcription stopped responding.");
+      send(chunk);
+    }
+
+    if (!cancelled && finishing && queue.length === 0 && inFlight.length === 0) {
+      finishSent = true;
+      armTimeout(DEADLINE_MS, "Live transcription stopped responding.");
+      send(JSON.stringify({ type: "finish" }));
+    }
+  }
+
+  const cancelledError = () => new Error("Voice input was cancelled.");
+
   async function start(): Promise<void> {
     await assertReady(options);
+
+    // A cancel during any await closes what this start has opened and rejects the IPC call, so the
+    // renderer is never left waiting on a microphone main has already let go.
+    if (cancelled) throw cancelledError();
     const ticket = await mediaTicket(options);
+
+    if (cancelled) throw cancelledError();
     const url = new URL("/ws/voice", options.server.origin.replace(/^http/, "ws"));
 
     url.searchParams.set("wsTicket", ticket);
     socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     armTimeout(READY_TIMEOUT_MS, "Voice transcription did not start.");
+
+    const opening = socket;
 
     socket.addEventListener("message", (event) => onMessage(String(event.data)));
     socket.addEventListener("error", () => fail(new Error("Could not reach live transcription.")));
@@ -119,13 +165,19 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     });
 
     await new Promise<void>((resolve, reject) => {
-      socket?.addEventListener("open", () => resolve(), { once: true });
-      socket?.addEventListener("error", () => reject(new Error("Could not open the voice stream.")), { once: true });
+      opening.addEventListener("open", () => resolve(), { once: true });
+      opening.addEventListener("error", () => reject(new Error("Could not open the voice stream.")), { once: true });
+      // A cancel closes the socket before it opens; the open event would never come.
+      opening.addEventListener("close", () => reject(cancelledError()), { once: true });
     });
+
+    if (cancelled) throw cancelledError();
     send(JSON.stringify({ type: "start", options: OPTIONS }));
 
     // `ready` clears the start timeout.
     await waitReady();
+
+    if (cancelled) throw cancelledError();
   }
 
   let readyResolver: (() => void) | null = null;
@@ -145,13 +197,6 @@ export function startVoice(options: VoiceOptions): VoiceStream {
     return readyPromise;
   }
 
-  function requestFinish() {
-    if (finishSent || cancelled) return;
-    finishSent = true;
-    armTimeout(FINISH_TIMEOUT_MS, "Live transcription stopped responding.");
-    send(JSON.stringify({ type: "finish" }));
-  }
-
   function onMessage(raw: string) {
     let event: StreamEvent;
 
@@ -169,9 +214,20 @@ export function startVoice(options: VoiceOptions): VoiceStream {
         ready = true;
         clearTimeout(timer);
         readyResolver?.();
+        pump();
 
         return;
       case "update":
+        // T3 acknowledges one chunk per update; that is the stream's send window.
+        if (inFlight.length > 0) {
+          inFlightBytes -= inFlight.shift()!;
+
+          if (inFlight.length > 0) armTimeout(DEADLINE_MS, "Live transcription stopped responding.");
+          else clearTimeout(timer);
+        }
+
+        pump();
+
         if (event.text === null) return;
 
         options.onEvent({
@@ -200,11 +256,47 @@ export function startVoice(options: VoiceOptions): VoiceStream {
   return {
     start,
     feed(pcm) {
-      if (!ready || finishSent || cancelled) return;
-      send(new Uint8Array(pcm));
+      if (cancelled || finishing) return;
+      const bytes = new Uint8Array(pcm);
+
+      // The cap counts every byte the server has not heard yet, as T3's own client does.
+      if (queuedBytes + inFlightBytes + bytes.byteLength > MAX_QUEUED_BYTES) {
+        fail(new Error("Voice recordings are limited to five minutes."));
+
+        return;
+      }
+
+      for (let offset = 0; offset < bytes.byteLength; ) {
+        const tail = queue.at(-1);
+        const room = tail === undefined ? 0 : MAX_CHUNK_BYTES - tail.byteLength;
+
+        if (tail !== undefined && room > 0) {
+          const appended = Math.min(room, bytes.byteLength - offset);
+          const merged = new Uint8Array(tail.byteLength + appended);
+
+          merged.set(tail);
+          merged.set(bytes.subarray(offset, offset + appended), tail.byteLength);
+          queue[queue.length - 1] = merged;
+          queuedBytes += appended;
+          offset += appended;
+
+          continue;
+        }
+
+        const chunk = bytes.slice(offset, offset + MAX_CHUNK_BYTES);
+
+        queue.push(chunk);
+        queuedBytes += chunk.byteLength;
+        offset += chunk.byteLength;
+      }
+
+      pump();
     },
     finish() {
-      requestFinish();
+      if (!cancelled && !finishing) {
+        finishing = true;
+        pump();
+      }
 
       return final;
     },
