@@ -1,5 +1,5 @@
 import { generatedIcon } from "../shared/projectIcon";
-import type { ProjectIcon, SidebarThread, ThreadState } from "../shared/types";
+import type { ProjectIcon, SidebarProject, SidebarThread, ThreadState } from "../shared/types";
 
 // Loose views of T3's shell stream (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ShellStreamItem).
 // Only the fields the sidebar reads are typed, so new T3 fields never break decoding.
@@ -27,6 +27,10 @@ interface ProjectShell {
   title: string;
   workspaceRoot: string;
   faviconPath?: string | null;
+  /** New threads in this project start in a worktree when this is "worktree". */
+  defaultThreadEnvMode?: string | null;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
   projectIcon?: { kind: string; name?: string; color?: string; text?: string; emoji?: string } | null;
 }
 
@@ -47,7 +51,7 @@ const WORKING = new Set(["preparing", "queued", "starting", "running", "waiting"
 
 export class ShellModel {
   private threads = new Map<string, ThreadShell>();
-  private projects = new Map<string, ProjectShell>();
+  private projectMap = new Map<string, ProjectShell>();
   hasSnapshot = false;
   /** Project favicons as data URLs, keyed by `${workspaceRoot}\n${faviconPath}`. */
   favicons = new Map<string, string>();
@@ -60,7 +64,8 @@ export class ShellModel {
   /** Folds in a cached snapshot that may be older than live updates: the newer row of each thread wins. */
   merge(raw: unknown) {
     const snapshot = raw as { threads: ThreadShell[]; projects: ProjectShell[] };
-    for (const project of snapshot.projects) this.projects.set(project.id, project);
+
+    for (const project of snapshot.projects) this.projectMap.set(project.id, project);
     for (const thread of snapshot.threads) {
       const current = this.threads.get(thread.id);
       if (!current || current.updatedAt <= thread.updatedAt) this.threads.set(thread.id, thread);
@@ -73,15 +78,15 @@ export class ShellModel {
     const item = raw as ShellItem & Record<string, any>;
     switch (item.kind) {
       case "snapshot":
-        return item.snapshot.projects.some((project: ProjectShell) => this.projects.has(project.id));
+        return item.snapshot.projects.some((project: ProjectShell) => this.projectMap.has(project.id));
       case "thread.updated":
-        return this.threads.has(item.thread.id) || this.projects.has(item.thread.projectId);
+        return this.threads.has(item.thread.id) || this.projectMap.has(item.thread.projectId);
       case "thread.removed":
         return this.threads.has(item.threadId);
       case "project.updated":
-        return this.projects.has(item.project.id);
+        return this.projectMap.has(item.project.id);
       case "project.removed":
-        return this.projects.has(item.projectId);
+        return this.projectMap.has(item.projectId);
       default:
         return false;
     }
@@ -95,7 +100,7 @@ export class ShellModel {
         // The sidebar reads no repository identities, so a refresh of them changes nothing here.
         if (resolvedRepositoryIdentityRoots !== undefined) return false;
         this.threads = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
-        this.projects = new Map(snapshot.projects.map((project) => [project.id, project]));
+        this.projectMap = new Map(snapshot.projects.map((project) => [project.id, project]));
         this.hasSnapshot = true;
         return true;
       }
@@ -109,14 +114,34 @@ export class ShellModel {
         return this.threads.delete((item as { threadId: string }).threadId);
       case "project.updated": {
         const { project } = item as Extract<ShellItem, { kind: "project.updated" }>;
-        this.projects.set(project.id, project);
+        this.projectMap.set(project.id, project);
         return true;
       }
       case "project.removed":
-        return this.projects.delete((item as { projectId: string }).projectId);
+        return "projectId" in item ? this.projectMap.delete(item.projectId) : false;
       default:
         return false;
     }
+  }
+
+  /** The listed projects of this machine, for the panel's labels and the draft picker. */
+  projects(): SidebarProject[] {
+    return [...this.projectMap.values()].flatMap((project) => {
+      if (project.archivedAt !== undefined && project.archivedAt !== null) return [];
+
+      if (project.deletedAt !== undefined && project.deletedAt !== null) return [];
+
+      return [
+        {
+          environmentId: this.environmentId,
+          projectId: project.id,
+          title: project.title,
+          icon: projectIcon(project, this.favicons.get(`${project.workspaceRoot}\n${project.faviconPath ?? ""}`)),
+          worktree: project.defaultThreadEnvMode === "worktree",
+          workspaceRoot: project.workspaceRoot,
+        },
+      ];
+    });
   }
 
   sidebar(): SidebarThread[] {
@@ -138,7 +163,7 @@ export class ShellModel {
       const state = childRequests.get(thread.id) ?? threadState(thread);
       const listed = state === "working" || state === "approval" || state === "input" || (!settled && !snoozed && state !== "idle");
       if (!pinned && !listed) continue;
-      const project = this.projects.get(thread.projectId);
+      const project = this.projectMap.get(thread.projectId);
       result.push({
         environmentId: this.environmentId,
         threadId: thread.id,

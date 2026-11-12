@@ -1,7 +1,7 @@
-import type { ThemeStorage } from "../shared/theme";
-import type { SidebarThread, ThreadSource } from "../shared/types";
-import { startCdpFeed } from "./cdp";
-import { AuthExpiredError, openShellStream } from "./rpc";
+import type { ThemeTokens } from "../shared/tokens";
+import type { SidebarProject, SidebarThread, ThreadSource } from "../shared/types";
+import { startCdpFeed, type ShellItemLike } from "./cdp";
+import { AuthExpiredError, connect, type T3Rpc } from "./rpc";
 import { ShellModel, sortSidebar } from "./shell";
 import type { T3Server } from "./t3";
 
@@ -14,8 +14,10 @@ export interface FeedOptions {
   token: string;
   debugPort: number;
   onThreads: (threads: SidebarThread[], source: ThreadSource) => void;
-  /** Only with the debugging port; without it the panel keeps its own theme. */
-  onThemeStorage: (storage: ThemeStorage) => void;
+  /** Only with the debugging port; without it the panel uses the fallback palette. */
+  onTokens: (tokens: Partial<ThemeTokens>) => void;
+  /** This machine's projects, so the panel can label threads and resolve their checkout. */
+  onProjects: (projects: SidebarProject[]) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
@@ -23,30 +25,37 @@ export interface FeedOptions {
 /** Thread list for this PC only, from the local server's shell stream. */
 export function startLocalFeed(options: FeedOptions): ThreadFeed {
   let stopStream: (() => void) | null = null;
+  let rpc: T3Rpc<ShellItemLike, never> | null = null;
   let stopped = false;
 
   void (async () => {
     try {
-      // SAFETY: T3's environment descriptor always names its environmentId; label is optional.
-      const descriptor = (await (await fetch(`${options.server.origin}/.well-known/t3/environment`)).json()) as {
-        environmentId: string;
-        label?: string;
-      };
+      const model = new ShellModel(options.server.environmentId, options.server.label);
 
-      const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
+      rpc = await connect<ShellItemLike, never>(options.server, options.token);
 
-      stopStream = await openShellStream(options.server, options.token, {
-        onValue: (value) => {
-          if (!stopped && model.apply(value) && model.hasSnapshot) options.onThreads(sortSidebar(model.sidebar()), "local");
+      if (stopped) {
+        rpc.close();
+
+        return;
+      }
+
+      stopStream = rpc.stream(
+        "orchestration.subscribeShell",
+        {},
+        {
+          onValue: (value) => {
+            if (stopped || !model.apply(value) || !model.hasSnapshot) return;
+            options.onThreads(sortSidebar(model.sidebar()), "local");
+            options.onProjects(model.projects());
+          },
+          onClose: (reason) => {
+            console.warn("[t3] shell stream closed:", reason);
+
+            if (!stopped) options.onLost();
+          },
         },
-        onClose: (reason) => {
-          console.warn("[t3] shell stream closed:", reason);
-          if (!stopped) options.onLost();
-        },
-      });
-
-      // Stopped while the stream was opening.
-      if (stopped) stopStream();
+      );
     } catch (error) {
       if (stopped) return;
 
@@ -60,6 +69,9 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
     stop() {
       stopped = true;
       stopStream?.();
+      // The shell socket is this feed's own: stopping the feed must not leave it open.
+      rpc?.close();
+      rpc = null;
     },
   };
 }
@@ -71,8 +83,10 @@ export function startThreadFeed(options: FeedOptions): ThreadFeed {
 
   void startCdpFeed({
     port: options.debugPort,
+    environmentId: options.server.environmentId,
     onThreads: (threads) => options.onThreads(threads, "all-machines"),
-    onThemeStorage: options.onThemeStorage,
+    onTokens: options.onTokens,
+    onProjects: options.onProjects,
     onClose: () => {
       if (!stopped) options.onLost();
     },

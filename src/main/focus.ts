@@ -1,7 +1,8 @@
-import type { BrowserWindow } from "electron";
+import { app, type BrowserWindow } from "electron";
 import koffi from "koffi";
 
-// Windows only. Elsewhere, Electron's focus() and blur() are enough.
+// Windows needs user32 to hand the foreground back and forth around the game; macOS uses app.hide()
+// (see returnFocus), and Electron's own focus()/blur() cover the rest.
 const user32 = process.platform === "win32" ? koffi.load("user32.dll") : null;
 const kernel32 = process.platform === "win32" ? koffi.load("kernel32.dll") : null;
 const getForegroundWindow = user32?.func("void* __stdcall GetForegroundWindow()");
@@ -51,6 +52,22 @@ function forceForeground(win: BrowserWindow) {
 
 /** Gives focus back to the window that was in front before the overlay took it. */
 export function returnFocus(win: BrowserWindow) {
-  if (setForegroundWindow && previous) setForegroundWindow(previous);
-  else win.blur();
+  if (setForegroundWindow && previous) {
+    setForegroundWindow(previous);
+
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    // Blurring a window leaves its app active on macOS; hiding the app hands focus back to the
+    // previous one, and showing the window again does not take it back.
+    app.hide();
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.showInactive();
+    }, 0);
+
+    return;
+  }
+
+  win.blur();
 }

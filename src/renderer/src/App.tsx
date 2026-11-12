@@ -21,6 +21,26 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // T3's theme arrives resolved from main; the sidebar and the panel both read these variables.
+  useEffect(() => {
+    if (state === null) return;
+    const root = document.documentElement;
+    const { theme } = state;
+
+    for (const [name, value] of Object.entries(theme.tokens)) root.style.setProperty(`--t3-${name}`, value);
+    root.style.setProperty("--t3-font-size-prompt", `${theme.fontSizePrompt}px`);
+    root.style.setProperty("--t3-font-size-code", `${theme.fontSizeCode}px`);
+    root.style.setProperty("--t3-glass-opacity", `${theme.glassOpacity}%`);
+    root.style.setProperty("--t3-glass-blur", theme.glassBlur);
+    root.style.setProperty("--t3-glass-saturation", theme.glassSaturation);
+
+    if (theme.fontSans === null) root.style.removeProperty("--t3-font-sans");
+    else root.style.setProperty("--t3-font-sans", theme.fontSans);
+
+    if (theme.fontCode === null) root.style.removeProperty("--t3-font-mono");
+    else root.style.setProperty("--t3-font-mono", theme.fontCode);
+  }, [state?.theme]);
+
   if (state === null) return null;
 
   // The window is shaped to its surfaces (main/index.ts), so the game gets clicks everywhere else and

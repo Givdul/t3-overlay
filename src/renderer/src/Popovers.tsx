@@ -114,11 +114,16 @@ export function SettingsPopover({ state, style }: { state: OverlayState; style: 
         checked={settings.compactComposer}
         onChange={(compactComposer) => window.overlay.setSettings({ compactComposer })}
       />
-      <Toggle
-        label="Custom theme"
-        checked={settings.customTheme}
-        onChange={(customTheme) => window.overlay.setSettings({ customTheme })}
-      />
+      <div className="flex flex-col gap-1">
+        <Toggle
+          label="Custom theme"
+          checked={settings.customTheme}
+          onChange={(customTheme) => window.overlay.setSettings({ customTheme })}
+        />
+        {settings.customTheme && state.source === "local" && (
+          <p className="text-[11px] text-t3-muted">Needs T3's debug port; the fallback palette is showing.</p>
+        )}
+      </div>
       <Toggle
         label="Close after sending"
         checked={settings.closeOnSend}
