@@ -1,11 +1,10 @@
 import { CircleDashed, Plus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  SIDEBAR_DIVIDER_HEIGHT,
-  SIDEBAR_FIXED_HEIGHT,
   SIDEBAR_SLOT_HEIGHT,
   SIDEBAR_WIDTH,
   sameThread,
+  sidebarHeight,
   threadKey,
   type OverlayState,
 } from "../../shared/types";
@@ -119,7 +118,7 @@ function T3Wordmark({ className }: { className?: string }) {
 function SidebarEdge({ kind }: { kind: "sidebar-top" | "sidebar-bottom" }) {
   return (
     <div
-      className={`absolute inset-x-0 z-10 h-[5px] cursor-ns-resize ${kind === "sidebar-top" ? "top-0" : "bottom-0"}`}
+      className={`absolute inset-x-0 z-10 h-2 cursor-ns-resize ${kind === "sidebar-top" ? "top-0" : "bottom-0"}`}
       onMouseDown={(event) => {
         if (event.button !== 0) return;
         window.overlay.dragStart(kind);
@@ -140,11 +139,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   // The height once every slot has settled. Main sizes the window by it, and on Windows the window's shape
   // also clips drawing: a growing sidebar reports at once, a shrinking one after its last slide ends.
-  const sidebarHeight =
-    SIDEBAR_FIXED_HEIGHT +
-    (state.working.length > 0 ? SIDEBAR_SLOT_HEIGHT : 0) +
-    (state.threads.length > 0 ? SIDEBAR_DIVIDER_HEIGHT : 0) +
-    Math.min(state.threads.length, state.sidebarRows) * SIDEBAR_SLOT_HEIGHT;
+  const settledHeight = sidebarHeight(state.threads.length, state.working.length, state.sidebarRows);
 
   const departedAt = Math.max(working.departedAt, divider.departedAt, threads.departedAt);
   const reported = useRef<number | null>(null);
@@ -153,15 +148,15 @@ export function Sidebar({ state }: { state: OverlayState }) {
     const resizedDown = state.sidebarRows < reportedRows.current;
     reportedRows.current = state.sidebarRows;
 
-    if (sidebarHeight === reported.current) return;
+    if (settledHeight === reported.current) return;
 
     const report = () => {
-      reported.current = sidebarHeight;
-      window.overlay.setExtent({ sidebarHeight });
+      reported.current = settledHeight;
+      window.overlay.setExtent({ sidebarHeight: settledHeight });
     };
 
     // A shrinking row count resizes the window at once; a departing thread waits for its slot's slide.
-    if (reported.current === null || sidebarHeight > reported.current || resizedDown || reducedMotion()) {
+    if (reported.current === null || settledHeight > reported.current || resizedDown || reducedMotion()) {
       report();
 
       return;
@@ -170,7 +165,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
     const timer = setTimeout(report, Math.max(0, departedAt + SLIDE_MS - performance.now()));
 
     return () => clearTimeout(timer);
-  }, [sidebarHeight, departedAt, state.sidebarRows]);
+  }, [settledHeight, departedAt, state.sidebarRows]);
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,

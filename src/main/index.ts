@@ -5,13 +5,12 @@ import {
   PANEL_GAP,
   PANEL_MIN,
   POPOVER_SIZE,
-  SIDEBAR_DIVIDER_HEIGHT,
-  SIDEBAR_FIXED_HEIGHT,
   SIDEBAR_SLOT_HEIGHT,
   SIDEBAR_WIDTH,
   TOOLTIP_MAX_WIDTH,
   popoverLeft,
   sameThread,
+  sidebarHeight,
   slotLeft,
   threadKey,
   type DragKind,
@@ -407,20 +406,12 @@ let dragTimer: NodeJS.Timeout | null = null;
 /** The bottom the sidebar keeps while its top edge is dragged. */
 let dragBottom: number | null = null;
 
-/** Everything the sidebar draws above and below its thread rows. */
-function sidebarChrome(): number {
-  return (
-    SIDEBAR_FIXED_HEIGHT +
-    (state.working.length > 0 ? SIDEBAR_SLOT_HEIGHT : 0) +
-    (state.threads.length > 0 ? SIDEBAR_DIVIDER_HEIGHT : 0)
-  );
-}
-
 function maxSidebarRows(area: Rectangle, top: number, bottom: number, kind: DragKind): number {
   // The edge that stays put leaves only the work area on the other side of it to grow into.
   const room = kind === "sidebar-top" ? bottom - area.y : area.y + area.height - top;
+  const chrome = sidebarHeight(state.threads.length, state.working.length, 0);
 
-  return Math.max(1, Math.floor((room - sidebarChrome()) / SIDEBAR_SLOT_HEIGHT));
+  return Math.max(1, Math.floor((room - chrome) / SIDEBAR_SLOT_HEIGHT));
 }
 
 function startDrag(kind: DragKind) {
@@ -431,8 +422,7 @@ function startDrag(kind: DragKind) {
   const rows0 = state.sidebarRows;
   const side = state.side;
   const area = screen.getDisplayNearestPoint(anchor0).workArea;
-  const bottom0 = anchor0.y + extent.sidebarHeight;
-  const maxRows = maxSidebarRows(area, anchor0.y, bottom0, kind);
+  const bottom0 = Math.min(anchor0.y + extent.sidebarHeight, area.y + area.height);
   const sidebarDrag = kind === "sidebar-top" || kind === "sidebar-bottom";
 
   if (sidebarDrag) persisted.anchor = anchor0;
@@ -458,8 +448,11 @@ function startDrag(kind: DragKind) {
         height: Math.max(PANEL_MIN.height, Math.min(size0.height + dy, area.height)),
       };
     } else {
-      // A top-edge drag grows the sidebar as the cursor moves up, a bottom-edge drag as it moves down.
-      const rows = rows0 + Math.round((kind === "sidebar-top" ? -dy : dy) / SIDEBAR_SLOT_HEIGHT);
+      const maxRows = maxSidebarRows(area, anchor0.y, bottom0, kind);
+      // Count rows from those on screen, so the first row of travel moves the edge with fewer threads than rows.
+      const delta = Math.round((kind === "sidebar-top" ? -dy : dy) / SIDEBAR_SLOT_HEIGHT);
+      const visible = Math.min(Math.max(Math.min(rows0, state.threads.length), 1), maxRows);
+      const rows = delta === 0 ? rows0 : visible + delta;
       const next = Math.max(1, Math.min(rows, maxRows));
 
       if (next === state.sidebarRows) return;
@@ -475,7 +468,17 @@ function startDrag(kind: DragKind) {
 function endDrag() {
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = null;
-  dragBottom = null;
+
+  // The renderer's last height report can arrive after the release; pin the bottom by main's own count first.
+  if (dragBottom !== null) {
+    const height = sidebarHeight(state.threads.length, state.working.length, state.sidebarRows);
+    persisted.anchor = { ...anchor(), y: Math.round(dragBottom - height) };
+    const moved = layout();
+    dragBottom = null;
+
+    if (moved) broadcast();
+  }
+
   save();
 }
 
