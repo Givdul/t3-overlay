@@ -19,19 +19,31 @@ export interface StreamHandlers {
 }
 
 async function openSocket(server: T3Server, token: string): Promise<WebSocket> {
-  const ticketResponse = await fetch(`${server.origin}/api/auth/websocket-ticket`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}` },
-  });
-  if (ticketResponse.status === 401) throw new AuthExpiredError("T3 rejected the overlay session");
-  if (!ticketResponse.ok) throw new Error(`websocket ticket failed: ${ticketResponse.status}`);
-  const { ticket } = (await ticketResponse.json()) as { ticket: string };
-
   const url = new URL("/ws", server.origin.replace(/^http/, "ws"));
   url.searchParams.set("orchestrationProtocol", "2");
-  url.searchParams.set("wsTicket", ticket);
+  url.searchParams.set("wsTicket", await websocketTicket(server, token));
 
   return new WebSocket(url);
+}
+
+/**
+ * A ticket is bound to the route that uses it, as in T3's own web client. Older servers only have the bare
+ * route, which issues one for any route and answers 404 on the scoped one.
+ */
+async function websocketTicket(server: T3Server, token: string): Promise<string> {
+  const headers = { authorization: `Bearer ${token}` };
+  let response = await fetch(`${server.origin}/api/auth/websocket-ticket/rpc`, { method: "POST", headers });
+
+  if (response.status === 404) response = await fetch(`${server.origin}/api/auth/websocket-ticket`, { method: "POST", headers });
+
+  if (response.status === 401) throw new AuthExpiredError("T3 rejected the overlay session");
+
+  if (!response.ok) throw new Error(`websocket ticket failed: ${response.status}`);
+
+  // SAFETY: both ticket routes answer with a ticket, as T3's own web client reads them.
+  const { ticket } = (await response.json()) as { ticket: string };
+
+  return ticket;
 }
 
 export async function openShellStream(server: T3Server, token: string, handlers: StreamHandlers): Promise<() => void> {
