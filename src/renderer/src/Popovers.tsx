@@ -124,21 +124,44 @@ export function SettingsPopover({ state, style }: { state: OverlayState; style: 
         checked={settings.openWhenDone}
         onChange={(openWhenDone) => window.overlay.setSettings({ openWhenDone })}
       />
-      <label className="flex flex-col gap-1.5 text-[13px]">
-        <span className="flex justify-between">
-          Chat background
-          <span className="text-t3-muted tabular-nums">{Math.round(state.opacity * 100)}%</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.05}
-          className="accent-sky-400"
-          value={state.opacity}
-          onChange={(event) => window.overlay.setOpacity(Number(event.target.value))}
-        />
-      </label>
+      <PercentSlider label="Chat background" value={state.opacity} onChange={(opacity) => window.overlay.setOpacity(opacity)} />
+      <PercentSlider
+        label="Message bubbles"
+        value={settings.bubbles}
+        zeroLabel="Off"
+        onChange={(bubbles) => window.overlay.setSettings({ bubbles })}
+      />
     </Surface>
+  );
+}
+
+function PercentSlider({
+  label,
+  value,
+  zeroLabel,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  /** Shown instead of "0%". */
+  zeroLabel?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5 text-[13px]">
+      <span className="flex justify-between">
+        {label}
+        <span className="text-t3-muted tabular-nums">{value === 0 && zeroLabel ? zeroLabel : `${Math.round(value * 100)}%`}</span>
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        className="accent-sky-400"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
   );
 }
