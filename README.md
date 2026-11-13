@@ -32,6 +32,7 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 | Focus the composer | `Ctrl+Shift+Space`, or the write button under the chat |
 | Hide or show the overlay | `Ctrl+Shift+H` |
 | Move | Drag the T3 logo |
+| Show more or fewer threads | Drag the sidebar's top or bottom edge |
 | Lock position, chat background opacity | Right-click the T3 logo |
 | Settle a thread | Right-click its icon |
 | Close the panel and return to the game | `Esc` |

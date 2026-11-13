@@ -5,12 +5,16 @@ import {
   PANEL_GAP,
   PANEL_MIN,
   POPOVER_SIZE,
+  SIDEBAR_DIVIDER_HEIGHT,
+  SIDEBAR_FIXED_HEIGHT,
+  SIDEBAR_SLOT_HEIGHT,
   SIDEBAR_WIDTH,
   TOOLTIP_MAX_WIDTH,
   popoverLeft,
   sameThread,
   slotLeft,
   threadKey,
+  type DragKind,
   type Extent,
   type GuestClientSettings,
   type OverlaySettings,
@@ -65,6 +69,7 @@ const state: OverlayState = {
   popover: null,
   side: "left",
   sidebarOffsetY: 0,
+  sidebarRows: persisted.sidebarRows,
   opacity: persisted.opacity,
   locked: persisted.locked,
   settings: persisted.settings,
@@ -76,6 +81,7 @@ const guestPreload = join(import.meta.dirname, "../preload/guest.cjs");
 
 function save() {
   persisted.panelSize = state.panelSize;
+  persisted.sidebarRows = state.sidebarRows;
   persisted.opacity = state.opacity;
   persisted.locked = state.locked;
   persisted.settings = state.settings;
@@ -87,11 +93,14 @@ function broadcast() {
   refreshTray(state, win?.isVisible() ?? false);
 }
 
-function anchor(): { x: number; y: number } {
+function anchor() {
   const saved = persisted.anchor;
   if (saved && screen.getAllDisplays().some((display) => display.id === saved.displayId)) return saved;
-  const area = screen.getPrimaryDisplay().workArea;
-  return { x: area.x, y: Math.round(area.y + area.height / 2 - extent.sidebarHeight / 2) };
+
+  const display = screen.getPrimaryDisplay();
+  const area = display.workArea;
+
+  return { displayId: display.id, x: area.x, y: Math.round(area.y + area.height / 2 - extent.sidebarHeight / 2) };
 }
 
 /** Sizes the window around the sidebar and its open surface. Returns whether the sidebar moved inside it. */
@@ -395,12 +404,39 @@ function configureT3Partition() {
 
 let dragTimer: NodeJS.Timeout | null = null;
 
-function startDrag(kind: "move" | "resize") {
-  if (kind === "move" && state.locked) return;
+/** The bottom the sidebar keeps while its top edge is dragged. */
+let dragBottom: number | null = null;
+
+/** Everything the sidebar draws above and below its thread rows. */
+function sidebarChrome(): number {
+  return (
+    SIDEBAR_FIXED_HEIGHT +
+    (state.working.length > 0 ? SIDEBAR_SLOT_HEIGHT : 0) +
+    (state.threads.length > 0 ? SIDEBAR_DIVIDER_HEIGHT : 0)
+  );
+}
+
+function maxSidebarRows(area: Rectangle, top: number, bottom: number, kind: DragKind): number {
+  // The edge that stays put leaves only the work area on the other side of it to grow into.
+  const room = kind === "sidebar-top" ? bottom - area.y : area.y + area.height - top;
+
+  return Math.max(1, Math.floor((room - sidebarChrome()) / SIDEBAR_SLOT_HEIGHT));
+}
+
+function startDrag(kind: DragKind) {
+  if (state.locked && kind !== "resize") return;
   const cursor0 = screen.getCursorScreenPoint();
   const anchor0 = anchor();
   const size0 = { ...state.panelSize };
+  const rows0 = state.sidebarRows;
   const side = state.side;
+  const area = screen.getDisplayNearestPoint(anchor0).workArea;
+  const bottom0 = anchor0.y + extent.sidebarHeight;
+  const maxRows = maxSidebarRows(area, anchor0.y, bottom0, kind);
+  const sidebarDrag = kind === "sidebar-top" || kind === "sidebar-bottom";
+
+  if (sidebarDrag) persisted.anchor = anchor0;
+  dragBottom = kind === "sidebar-top" ? bottom0 : null;
   let last = cursor0;
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = setInterval(() => {
@@ -415,22 +451,31 @@ function startDrag(kind: "move" | "resize") {
       const x = Math.max(area.x, Math.min(point.x, area.x + area.width - SIDEBAR_WIDTH));
       const y = Math.max(area.y, Math.min(point.y, area.y + area.height - extent.sidebarHeight));
       persisted.anchor = { displayId: screen.getDisplayNearestPoint(point).id, x, y };
-    } else {
-      const area = screen.getDisplayNearestPoint(anchor0).workArea;
+    } else if (kind === "resize") {
       const width = side === "left" ? size0.width + dx : size0.width - dx;
       state.panelSize = {
         width: Math.max(PANEL_MIN.width, Math.min(width, area.width - SIDEBAR_WIDTH - PANEL_GAP)),
         height: Math.max(PANEL_MIN.height, Math.min(size0.height + dy, area.height)),
       };
+    } else {
+      // A top-edge drag grows the sidebar as the cursor moves up, a bottom-edge drag as it moves down.
+      const rows = rows0 + Math.round((kind === "sidebar-top" ? -dy : dy) / SIDEBAR_SLOT_HEIGHT);
+      const next = Math.max(1, Math.min(rows, maxRows));
+
+      if (next === state.sidebarRows) return;
+
+      state.sidebarRows = next;
     }
+
     // A move re-renders only when the sidebar shifts inside the window, such as at a screen edge.
-    if (layout() || kind === "resize") broadcast();
+    if (layout() || kind !== "move") broadcast();
   }, 16);
 }
 
 function endDrag() {
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = null;
+  dragBottom = null;
   save();
 }
 
@@ -494,6 +539,12 @@ onHost("overlay:extent", (_event, next: Partial<Extent>) => {
   if (JSON.stringify({ ...extent, ...next }) === JSON.stringify(extent)) return;
 
   extent = { ...extent, ...next };
+
+  // A top-edge drag keeps the sidebar's bottom fixed, so its anchor follows the height the renderer reports.
+  if (dragBottom !== null && next.sidebarHeight !== undefined) {
+    persisted.anchor = { ...anchor(), y: Math.round(dragBottom - extent.sidebarHeight) };
+  }
+
   layout();
   broadcast();
 });
@@ -550,7 +601,7 @@ onHost("overlay:lock", (_event, locked: boolean) => {
   save();
 });
 
-onHost("overlay:drag-start", (_event, kind: "move" | "resize") => startDrag(kind));
+onHost("overlay:drag-start", (_event, kind: DragKind) => startDrag(kind));
 
 onHost("overlay:drag-end", endDrag);
 
