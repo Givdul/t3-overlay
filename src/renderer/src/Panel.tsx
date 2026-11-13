@@ -210,7 +210,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
   // The title is drawn inside T3's page, above the chat history or atop the composer card.
   const title = panelTitle(state.panel, titles.current);
-  const { titleInComposer, textOutline, compactComposer } = state.settings;
+  const { titleInComposer, textOutline, compactComposer, bubbles } = state.settings;
   // A thread waiting on an approval or an answer keeps its composer open.
   const target = state.panel;
   const threadState =
@@ -218,8 +218,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const needsReply = threadState === "approval" || threadState === "input";
   const { side } = state;
   useEffect(() => {
-    if (ready) webview.current?.send("chrome", { title, titleInComposer, textOutline, compactComposer, needsReply, side });
-  }, [ready, title, titleInComposer, textOutline, compactComposer, needsReply, side]);
+    if (ready) webview.current?.send("chrome", { title, titleInComposer, textOutline, compactComposer, bubbles, needsReply, side });
+  }, [ready, title, titleInComposer, textOutline, compactComposer, bubbles, needsReply, side]);
 
   if (initialSrc === null) return null;
 

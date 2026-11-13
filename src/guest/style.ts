@@ -18,6 +18,8 @@ export const GUEST_CSS = `
   --overlay-bg: color-mix(in srgb, var(--background) calc(var(--overlay-opacity) * 100%), transparent);
   --overlay-border: color-mix(in srgb, var(--border) calc(var(--overlay-opacity) * 100%), transparent);
   --overlay-radius: 12px;
+  --overlay-bubbles: 1;
+  --overlay-bubble-bg: color-mix(in srgb, var(--message-surface) calc(var(--overlay-bubbles) * 100%), transparent);
   /* How far the open composer overlaps the history's bottom: T3's composer corner radius (rounded-2xl). */
   --overlay-composer-overlap: 0px;
 }
@@ -148,6 +150,22 @@ html[data-overlay-outline="thick"] [data-slot="composer-shell"]::after {
     -1.5px -1.5px 0 #000, 0 -1.5px 0 #000, 1.5px -1.5px 0 #000, 1.5px 0 0 #000,
     1.5px 1.5px 0 #000, 0 1.5px 0 #000, -1.5px 1.5px 0 #000, -1.5px 0 0 #000,
     0 0 3px #000;
+}
+
+/* "Message bubbles": your messages and the agent's sit in bubbles of one color, faded by --overlay-bubbles.
+   T3 draws only your bubble (TimelineUserMessageRow.tsx: bg-message, rounded-2xl, p-3). Its bg-message class
+   reads --message-surface. The agent's bubble copies it onto the message's only child (AssistantTimelineRow
+   in TimelineAssistantRows.tsx). At 0 the agent's message keeps T3's own layout. */
+[data-message-role="user"] .bg-message {
+  background-color: var(--overlay-bubble-bg);
+}
+
+html[data-overlay-bubbles] [data-message-role="assistant"] > div {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: var(--overlay-bubble-bg);
 }
 
 /* "Title in composer": the title becomes the card's first row, using the shell's unused ::after.

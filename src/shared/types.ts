@@ -73,6 +73,8 @@ export interface OverlaySettings {
   textOutline: TextOutline;
   /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
   compactComposer: boolean;
+  /** Opacity, 0 to 1, of the bubbles behind your messages and the agent's. 0 draws no bubbles. */
+  bubbles: number;
 }
 
 export const DEFAULT_SETTINGS: OverlaySettings = {
@@ -81,6 +83,7 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   openWhenDone: false,
   textOutline: "off",
   compactComposer: true,
+  bubbles: 1,
 };
 
 /** Content-sized heights the renderer measures. Main sizes and shapes the window by them. */

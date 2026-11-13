@@ -96,6 +96,7 @@ interface Chrome {
   titleInComposer: boolean;
   textOutline: TextOutline;
   compactComposer: boolean;
+  bubbles: number;
   /** The thread waits on an approval or an answer. */
   needsReply: boolean;
   /** The screen edge the overlay docks to. The folded composer's button sits on this side. */
@@ -112,6 +113,8 @@ ipcRenderer.on("chrome", (_event, next: Chrome) => {
   root.dataset.overlayTitle = next.titleInComposer ? "composer" : "chat";
   root.dataset.overlayOutline = next.textOutline;
   root.dataset.overlaySide = next.side;
+  root.style.setProperty("--overlay-bubbles", String(next.bubbles));
+  root.toggleAttribute("data-overlay-bubbles", next.bubbles > 0);
   foldComposer();
 });
 
