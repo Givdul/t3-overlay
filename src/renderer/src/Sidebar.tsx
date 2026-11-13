@@ -1,18 +1,15 @@
 import { CircleDashed, Plus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { SIDEBAR_WIDTH, sameThread, threadKey, type OverlayState } from "../../shared/types";
+import {
+  SIDEBAR_SLOT_HEIGHT,
+  SIDEBAR_WIDTH,
+  sameThread,
+  sidebarHeight,
+  threadKey,
+  type OverlayState,
+} from "../../shared/types";
 import { ProjectGlyph, StateBadge, threadTooltip } from "./ThreadIcon";
 import { Tooltip, useTooltip, type TooltipContent } from "./Tooltip";
-
-const VISIBLE_THREADS = 5;
-
-/** A 36px button and one 6px gap. Each item's slot owns its gap, so a slot opening or closing never jumps. */
-const SLOT_HEIGHT = 42;
-
-const DIVIDER_HEIGHT = 5;
-
-/** Border, padding, the logo and the new-thread button with their gaps. */
-const FIXED_HEIGHT = 2 + 8 + 36 + 6 + 36 + 6 + 8;
 
 /** Matches the slots' duration-220. */
 const SLIDE_MS = 220;
@@ -117,9 +114,23 @@ function T3Wordmark({ className }: { className?: string }) {
   );
 }
 
+/** A thin strip on the sidebar's edge that sizes it by thread rows. */
+function SidebarEdge({ kind }: { kind: "sidebar-top" | "sidebar-bottom" }) {
+  return (
+    <div
+      className={`absolute inset-x-0 z-10 h-2 cursor-ns-resize ${kind === "sidebar-top" ? "top-0" : "bottom-0"}`}
+      onMouseDown={(event) => {
+        if (event.button !== 0) return;
+        window.overlay.dragStart(kind);
+        window.addEventListener("mouseup", () => window.overlay.dragEnd(), { once: true });
+      }}
+    />
+  );
+}
+
 export function Sidebar({ state }: { state: OverlayState }) {
   const [scrolledToEnd, setScrolledToEnd] = useState(false);
-  const moreBelow = state.threads.length > VISIBLE_THREADS && !scrolledToEnd;
+  const moreBelow = state.threads.length > state.sidebarRows && !scrolledToEnd;
   const left = state.side === "left" ? 0 : undefined;
   const right = state.side === "right" ? 0 : undefined;
   const threads = usePresence(state.threads, threadKey);
@@ -128,23 +139,24 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   // The height once every slot has settled. Main sizes the window by it, and on Windows the window's shape
   // also clips drawing: a growing sidebar reports at once, a shrinking one after its last slide ends.
-  const sidebarHeight =
-    FIXED_HEIGHT +
-    (state.working.length > 0 ? SLOT_HEIGHT : 0) +
-    (state.threads.length > 0 ? DIVIDER_HEIGHT : 0) +
-    Math.min(state.threads.length, VISIBLE_THREADS) * SLOT_HEIGHT;
+  const settledHeight = sidebarHeight(state.threads.length, state.working.length, state.sidebarRows);
 
   const departedAt = Math.max(working.departedAt, divider.departedAt, threads.departedAt);
   const reported = useRef<number | null>(null);
+  const reportedRows = useRef(state.sidebarRows);
   useLayoutEffect(() => {
-    if (sidebarHeight === reported.current) return;
+    const resizedDown = state.sidebarRows < reportedRows.current;
+    reportedRows.current = state.sidebarRows;
+
+    if (settledHeight === reported.current) return;
 
     const report = () => {
-      reported.current = sidebarHeight;
-      window.overlay.setExtent({ sidebarHeight });
+      reported.current = settledHeight;
+      window.overlay.setExtent({ sidebarHeight: settledHeight });
     };
 
-    if (reported.current === null || sidebarHeight > reported.current || reducedMotion()) {
+    // A shrinking row count resizes the window at once; a departing thread waits for its slot's slide.
+    if (reported.current === null || settledHeight > reported.current || resizedDown || reducedMotion()) {
       report();
 
       return;
@@ -153,7 +165,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
     const timer = setTimeout(report, Math.max(0, departedAt + SLIDE_MS - performance.now()));
 
     return () => clearTimeout(timer);
-  }, [sidebarHeight, departedAt]);
+  }, [settledHeight, departedAt, state.sidebarRows]);
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,
@@ -241,13 +253,13 @@ export function Sidebar({ state }: { state: OverlayState }) {
             </div>
           ))}
 
-          {/* Five icons fit; the rest scroll. The side and bottom padding keep state badges from being clipped.
+          {/* The chosen rows fit; the rest scroll. The side and bottom padding keep state badges from being clipped.
               Each slot holds the gap above its icon, so the list starts at the divider and clips its top 2px,
               where it started when the gap sat outside it. */}
           <div
             className="-mx-1 -mb-1 flex shrink-0 flex-col overflow-y-auto px-1 pb-1 [clip-path:inset(2px_0_0)] [scrollbar-width:none]"
             style={{
-              maxHeight: VISIBLE_THREADS * SLOT_HEIGHT + 4,
+              maxHeight: state.sidebarRows * SIDEBAR_SLOT_HEIGHT + 4,
               maskImage: moreBelow ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)" : undefined,
             }}
             onScroll={(event) => {
@@ -272,6 +284,12 @@ export function Sidebar({ state }: { state: OverlayState }) {
             ))}
           </div>
         </div>
+        {!state.locked && (
+          <>
+            <SidebarEdge kind="sidebar-top" />
+            <SidebarEdge kind="sidebar-bottom" />
+          </>
+        )}
       </div>
       {tooltip.shown && tip && <Tooltip side={state.side} shown={tooltip.shown} content={tip} />}
     </>

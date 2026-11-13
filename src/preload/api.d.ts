@@ -1,4 +1,4 @@
-import type { Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
+import type { DragKind, Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
 
 export interface OverlayApi {
   init(): Promise<{ state: OverlayState }>;
@@ -14,7 +14,7 @@ export interface OverlayApi {
   setOpacity(opacity: number): void;
   setLocked(locked: boolean): void;
   setSettings(patch: Partial<OverlaySettings>): void;
-  dragStart(kind: "move" | "resize"): void;
+  dragStart(kind: DragKind): void;
   dragEnd(): void;
   hover(): void;
   escape(): void;

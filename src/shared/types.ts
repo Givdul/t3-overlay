@@ -51,6 +51,8 @@ export interface OverlayState {
   popover: Popover | null;
   side: "left" | "right";
   sidebarOffsetY: number;
+  /** Most thread rows the sidebar shows. With fewer threads, it is only as tall as they are. */
+  sidebarRows: number;
   opacity: number;
   locked: boolean;
   settings: OverlaySettings;
@@ -107,13 +109,35 @@ export const TOOLTIP_MAX_WIDTH = 240;
 /** Small surfaces that open beside the sidebar: the working-thread list and the logo's settings. */
 export type Popover = "working" | "settings";
 
+export type DragKind = "move" | "resize" | "sidebar-top" | "sidebar-bottom";
+
 export const SIDEBAR_WIDTH = 52;
+
+/** A 36px icon button and one 6px gap. Must match the h-[42px] slot class in Sidebar.tsx. Each item's slot owns its gap, so a slot opening or closing never jumps. */
+export const SIDEBAR_SLOT_HEIGHT = 42;
+
+/** Border, padding, the logo and the new-thread button with their gaps. */
+export const SIDEBAR_FIXED_HEIGHT = 2 + 8 + 36 + 6 + 36 + 6 + 8;
+
+/** Must match the divider's h-[5px] slot class in Sidebar.tsx. */
+export const SIDEBAR_DIVIDER_HEIGHT = 5;
+
 export const PANEL_GAP = 6;
 export const POPOVER_SIZE: Record<Popover, { width: number; height: number }> = {
   working: { width: 260, height: 300 },
   settings: { width: 250, height: 332 },
 };
 export const PANEL_MIN = { width: 360, height: 300 };
+
+/** The sidebar's settled height for a row count. */
+export function sidebarHeight(threads: number, working: number, rows: number): number {
+  return (
+    SIDEBAR_FIXED_HEIGHT +
+    (working > 0 ? SIDEBAR_SLOT_HEIGHT : 0) +
+    (threads > 0 ? SIDEBAR_DIVIDER_HEIGHT : 0) +
+    Math.min(threads, rows) * SIDEBAR_SLOT_HEIGHT
+  );
+}
 
 /** Left edge of the panel or popover slot in the window. The renderer places surfaces by it and main shapes the window. */
 export function slotLeft(side: OverlayState["side"]): number {

@@ -7,6 +7,8 @@ export interface Persisted {
   /** Sidebar top-left in screen DIPs, tied to the display it was placed on. */
   anchor: { displayId: number; x: number; y: number } | null;
   panelSize: { width: number; height: number };
+  /** Most thread rows the sidebar shows. */
+  sidebarRows: number;
   opacity: number;
   locked: boolean;
   settings: OverlaySettings;
@@ -26,6 +28,7 @@ export interface Config {
 const DEFAULT_PERSISTED: Persisted = {
   anchor: null,
   panelSize: { width: 440, height: 560 },
+  sidebarRows: 5,
   opacity: 0.85,
   locked: false,
   settings: DEFAULT_SETTINGS,
