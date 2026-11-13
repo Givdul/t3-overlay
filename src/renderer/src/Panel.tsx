@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { defaultThemeStorage, themeApplyScript, type ThemeStorage } from "../../shared/theme";
 import type { OverlayState, PanelTarget, SidebarThread, ThreadRef } from "../../shared/types";
 
 interface WebviewElement extends HTMLWebViewElement {
@@ -107,7 +106,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     const element = webview.current;
 
     if (!element || initialSrc === null) return;
-    // The thread title, theme and page scripts go only to T3's own page, not to a page it navigated to.
+    // The thread title and page scripts go only to T3's own page, not to a page it navigated to.
     const onT3 = (url: string) => sameOrigin(url, initialSrc);
     const onReady = () => {
       setReady(onT3(element.getURL()));
@@ -158,19 +157,6 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   useEffect(() => {
     if (state.panel === null) setPointerInside(false);
   }, [state.panel]);
-
-  // "Custom theme" follows the theme picked in the desktop app, live. Needs T3's debugging port.
-  const [desktopTheme, setDesktopTheme] = useState<ThemeStorage | null>(null);
-  useEffect(() => {
-    const stop = window.overlay.onThemeStorage(setDesktopTheme);
-    void window.overlay.getThemeStorage().then(setDesktopTheme);
-    return stop;
-  }, []);
-  const { customTheme } = state.settings;
-  useEffect(() => {
-    const storage = customTheme ? desktopTheme : defaultThemeStorage(desktopTheme);
-    if (ready && storage) void webview.current?.executeJavaScript(themeApplyScript(storage));
-  }, [ready, desktopTheme, customTheme]);
 
   // A thread on a machine this page has no connection to renders as an empty page, so check first.
   const [unreachable, setUnreachable] = useState<SidebarThread | ThreadRef | null>(null);

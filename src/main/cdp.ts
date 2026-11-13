@@ -1,10 +1,10 @@
-import { THEME_STORAGE_KEY, type ThemeStorage } from "../shared/theme";
+import type { WebContents } from "electron";
 import type { SidebarThread } from "../shared/types";
 import { ShellModel, sortSidebar } from "./shell";
 
-// Reads the thread list of every machine from T3's own window over the Chrome DevTools Protocol.
+// Reads the thread list of every machine from the panel's own T3 page over the Chrome DevTools Protocol.
 // Seed: T3's IndexedDB shell cache (apps/web/src/connection/storage.ts). Live: the shell stream
-// frames T3's renderer already receives on its sockets, one socket per connected machine.
+// frames T3's page already receives on its sockets, one socket per connected machine.
 
 const SEED_SCRIPT = `(async () => {
   const open = (name) => new Promise((resolve, reject) => {
@@ -40,56 +40,28 @@ interface Seed {
 
 const parse = <T>(value: unknown): T => (typeof value === "string" ? JSON.parse(value) : value) as T;
 
-const THEME_READ_SCRIPT = `Object.fromEntries(Object.keys(localStorage)
-  .filter((key) => ${THEME_STORAGE_KEY.toString()}.test(key))
-  .map((key) => [key, localStorage.getItem(key)]))`;
-
-export interface CdpFeedOptions {
-  port: number;
+export interface GuestFeedOptions {
+  /** The panel's webview on T3's own page, with its debugger attached. */
+  contents: WebContents;
+  /** Only once the page has a cached shell for at least one machine. */
   onThreads: (threads: SidebarThread[]) => void;
-  /** T3's selected theme, on attach and whenever it changes in the desktop app. */
-  onThemeStorage: (storage: ThemeStorage) => void;
-  onClose: () => void;
 }
 
-/** Resolves null when T3 has no debugging port, so the caller can fall back to this PC only. */
-export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): void } | null> {
-  let targets: { type: string; url: string; webSocketDebuggerUrl: string }[];
-  try {
-    targets = await (await fetch(`http://127.0.0.1:${options.port}/json/list`, { signal: AbortSignal.timeout(2000) })).json();
-  } catch {
-    return null;
-  }
-  const page = targets.find((target) => target.type === "page" && /^t3code(-dev)?:\/\/app/.test(target.url));
-
-  // Only T3's own debugger on this port; a listing could point the socket anywhere.
-  if (!page || !page.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${options.port}/`)) return null;
-
-  const socket = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
-  });
-
-  let nextId = 0;
-  const pending = new Map<number, (result: unknown) => void>();
-  const send = (method: string, params: object = {}) =>
-    new Promise<any>((resolve) => {
-      const id = ++nextId;
-      pending.set(id, resolve);
-      socket.send(JSON.stringify({ id, method, params }));
-    });
+export function startGuestFeed({ contents, onThreads }: GuestFeedOptions): { stop(): void } {
+  const send = (method: string, params: object = {}) => contents.debugger.sendCommand(method, params);
 
   const models = new Map<string, ShellModel>();
   const socketEnv = new Map<string, string>();
   const partial = new Map<string, string>();
   let stopped = false;
 
-  const emit = () => options.onThreads(sortSidebar([...models.values()].flatMap((model) => model.sidebar())));
+  const emit = () => {
+    if (!stopped && models.size > 0) onThreads(sortSidebar([...models.values()].flatMap((model) => model.sidebar())));
+  };
 
   async function seed() {
     const response = await send("Runtime.evaluate", { expression: SEED_SCRIPT, awaitPromise: true, returnByValue: true });
-    const seed = response.result?.result?.value as Seed | undefined;
+    const seed = response.result?.value as Seed | undefined;
     if (!seed) return;
     const labels = new Map<string, string>();
     for (const raw of seed.configs) {
@@ -114,16 +86,10 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     emit();
   }
 
-  async function readTheme() {
-    const response = await send("Runtime.evaluate", { expression: THEME_READ_SCRIPT, returnByValue: true });
-    const storage = response.result?.result?.value as ThemeStorage | undefined;
-    if (storage) options.onThemeStorage(storage);
-  }
-
   let reseedTimer: NodeJS.Timeout | null = null;
   const reseedSoon = () => {
     if (reseedTimer) clearTimeout(reseedTimer);
-    reseedTimer = setTimeout(() => void seed(), 1500);
+    reseedTimer = setTimeout(() => void seed().catch((error) => console.warn("[t3] panel reseed failed", error)), 1500);
   };
 
   function onFrame(requestId: string, payload: string) {
@@ -166,46 +132,26 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     return undefined;
   }
 
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(String(event.data));
-    if (message.id !== undefined) {
-      pending.get(message.id)?.(message);
-      pending.delete(message.id);
-      return;
-    }
-    if (message.method === "Network.webSocketFrameReceived") {
-      onFrame(message.params.requestId, message.params.response.payloadData);
-    } else if (message.method === "Network.webSocketCreated" || message.method === "Network.webSocketClosed") {
-      socketEnv.delete(message.params.requestId);
+  const onMessage = (_event: unknown, method: string, params: any) => {
+    if (method === "Network.webSocketFrameReceived") {
+      onFrame(params.requestId, params.response.payloadData);
+    } else if (method === "Network.webSocketCreated" || method === "Network.webSocketClosed") {
+      socketEnv.delete(params.requestId);
       reseedSoon();
-    } else if (message.method?.startsWith("DOMStorage.domStorageItem") && message.params.storageId?.isLocalStorage) {
-      // ItemsCleared has no key; every other event names the key that changed.
-      const key = message.params.key as string | undefined;
-      if (key === undefined || THEME_STORAGE_KEY.test(key)) void readTheme();
     }
-  });
-  socket.addEventListener("close", () => {
-    if (!stopped) options.onClose();
-  });
+  };
+  contents.debugger.on("message", onMessage);
 
-  // The overlay reads only socket frames, so T3's renderer keeps no response bodies for it.
-  try {
-    await send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
-    await send("DOMStorage.enable");
-    await seed();
-    await readTheme();
-  } catch (error) {
-    // The caller falls back to the local feed, so this socket must not keep feeding threads.
-    stopped = true;
-    socket.close();
-    throw error;
-  }
+  // The overlay reads only socket frames, so the page keeps no response bodies for it.
+  void send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 })
+    .then(seed)
+    .catch((error) => console.warn("[t3] panel thread feed failed", error));
 
   return {
     stop() {
       stopped = true;
       if (reseedTimer) clearTimeout(reseedTimer);
-      socket.close();
+      contents.debugger.off("message", onMessage);
     },
   };
 }

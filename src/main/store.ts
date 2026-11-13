@@ -15,7 +15,6 @@ export interface Persisted {
 
 export interface Config {
   hotkeys: { focus: string; toggle: string };
-  debugPort: number;
   /**
    * Where the chat panel loads T3's web UI from. The hosted app can sign into T3 Connect and reach
    * every machine; T3 only allows that sign-in over HTTPS on its own domain. "local" uses this PC's
@@ -35,7 +34,6 @@ const DEFAULT_PERSISTED: Persisted = {
 
 const DEFAULT_CONFIG: Config = {
   hotkeys: { focus: "Control+Shift+Space", toggle: "Control+Shift+H" },
-  debugPort: 9333,
   panelOrigin: "https://app.t3.codes",
 };
 
@@ -76,7 +74,6 @@ export function loadConfig(): Config {
 
   return {
     hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys },
-    debugPort: Number.isInteger(config.debugPort) && config.debugPort > 0 && config.debugPort < 65536 ? config.debugPort : DEFAULT_CONFIG.debugPort,
     panelOrigin: panelOrigin(config.panelOrigin),
   };
 }

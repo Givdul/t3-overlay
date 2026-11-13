@@ -1,4 +1,3 @@
-import type { ThemeStorage } from "../shared/theme";
 import type { Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
 
 export interface OverlayApi {
@@ -12,8 +11,6 @@ export interface OverlayApi {
   setPopover(popover: Popover | null): void;
   threadMenu(thread: ThreadRef): void;
   onSettle(listener: (thread: ThreadRef) => void): () => void;
-  getThemeStorage(): Promise<ThemeStorage | null>;
-  onThemeStorage(listener: (storage: ThemeStorage) => void): () => void;
   setOpacity(opacity: number): void;
   setLocked(locked: boolean): void;
   setSettings(patch: Partial<OverlaySettings>): void;

@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ThemeStorage } from "../shared/theme";
 import type { OverlayState, PanelTarget, ThreadRef } from "../shared/types";
 import type { OverlayApi } from "./api";
 
@@ -19,12 +18,6 @@ const api: OverlayApi = {
   follow: (thread: ThreadRef) => ipcRenderer.send("overlay:follow", thread),
   setPopover: (popover) => ipcRenderer.send("overlay:popover", popover),
   threadMenu: (thread) => ipcRenderer.send("overlay:thread-menu", thread),
-  getThemeStorage: () => ipcRenderer.invoke("overlay:get-theme-storage") as Promise<ThemeStorage | null>,
-  onThemeStorage: (listener) => {
-    const handler = (_event: unknown, storage: ThemeStorage) => listener(storage);
-    ipcRenderer.on("overlay:theme-storage", handler);
-    return () => ipcRenderer.off("overlay:theme-storage", handler);
-  },
   onSettle: (listener) => {
     const handler = (_event: unknown, thread: ThreadRef) => listener(thread);
     ipcRenderer.on("overlay:settle", handler);

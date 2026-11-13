@@ -14,13 +14,8 @@ function apply(contents: WebContents) {
     .catch((error) => console.warn("[motion] emulation failed", error));
 }
 
+/** `contents` must have its debugger attached. */
 export function trackMotion(contents: WebContents) {
-  try {
-    contents.debugger.attach("1.3");
-  } catch (error) {
-    console.warn("[motion] could not attach", error);
-    return;
-  }
   pages.add(contents);
   contents.once("destroyed", () => pages.delete(contents));
   apply(contents);

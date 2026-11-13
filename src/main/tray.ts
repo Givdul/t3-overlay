@@ -7,7 +7,6 @@ export interface TrayActions {
   setLocked: (locked: boolean) => void;
   connectMachines: () => void;
   launchT3: () => void;
-  restartT3: () => void;
   editConfig: () => void;
   quit: () => void;
 }
@@ -35,7 +34,7 @@ export function refreshTray(state: OverlayState, visible: boolean) {
   tray.setImage(icon(warning ? "tray-warning.png" : "tray.png"));
   const notes = [
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
-    state.source === "local" ? "Only this PC: T3 is running without overlay support" : null,
+    state.source === "local" ? "Only this PC: the panel is not connected to other machines" : null,
   ].filter((note): note is string => note !== null);
   tray.setToolTip(["T3 overlay", ...notes].join("\n"));
 
@@ -48,9 +47,7 @@ export function refreshTray(state: OverlayState, visible: boolean) {
       { label: "Lock position", type: "checkbox", checked: state.locked, click: (item) => a.setLocked(item.checked) },
       { type: "separator" },
       { label: "Connect machines", click: a.connectMachines, enabled: state.t3 === "connected" },
-      state.t3 === "connected" && state.source === "local"
-        ? { label: "Restart T3 with overlay support", click: a.restartT3 }
-        : { label: "Launch T3 with overlay support", click: a.launchT3, enabled: state.t3 === "offline" },
+      { label: "Launch T3", click: a.launchT3, enabled: state.t3 === "offline" },
       { label: "Edit config", click: a.editConfig },
       { type: "separator" },
       { label: "Quit", click: a.quit },

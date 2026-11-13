@@ -73,8 +73,6 @@ export interface OverlaySettings {
   textOutline: TextOutline;
   /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
   compactComposer: boolean;
-  /** The theme picked in the desktop app. Off shows T3's default theme, following the system appearance. */
-  customTheme: boolean;
 }
 
 export const DEFAULT_SETTINGS: OverlaySettings = {
@@ -83,7 +81,6 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   openWhenDone: false,
   textOutline: "off",
   compactComposer: true,
-  customTheme: true,
 };
 
 /** Content-sized heights the renderer measures. Main sizes and shapes the window by them. */

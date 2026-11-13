@@ -20,10 +20,10 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 - Mints its own session once with `t3 auth session issue --ttl 90d` and stores it with `safeStorage`.
 - Copies `~/.t3/userdata/client-settings.json` into the panel on start, so send shortcut and
   follow-up behavior match the desktop app.
-- Threads from every machine: start T3 with `--remote-debugging-port=9333` (tray: "Launch T3 with
-  overlay support"). The overlay reads T3's own thread cache and live socket frames over CDP.
-  Without the port it lists this PC only and the tray icon shows a warning.
-  While that port is open, any local program can control T3.
+- Threads from every machine: the sidebar reads them from the panel's own T3 page, through Electron's
+  debugger on that webview. It lists the machines the panel is connected to (tray: "Connect machines").
+  Until the panel has loaded, or while it knows no machine, it lists this PC only.
+- The panel keeps its own T3 theme. Change it in the panel's T3 settings.
 
 ## Controls
 
@@ -36,7 +36,7 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 | Settle a thread | Right-click its icon |
 | Close the panel and return to the game | `Esc` |
 
-Hotkeys and the debugging port live in the config file (tray: "Edit config").
+Hotkeys and the panel's origin live in the config file (tray: "Edit config").
 
 ## When T3 changes its layout
 

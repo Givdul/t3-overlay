@@ -1,27 +1,26 @@
-import type { ThemeStorage } from "../shared/theme";
+import type { WebContents } from "electron";
 import type { SidebarThread, ThreadSource } from "../shared/types";
-import { startCdpFeed } from "./cdp";
+import { startGuestFeed } from "./cdp";
 import { AuthExpiredError, openShellStream } from "./rpc";
 import { ShellModel, sortSidebar } from "./shell";
 import type { T3Server } from "./t3";
 
 export interface ThreadFeed {
+  /** The panel's webview once it shows T3's own page, or null when it stops showing it. */
+  setGuest(contents: WebContents | null): void;
   stop(): void;
 }
 
 export interface FeedOptions {
   server: T3Server;
   token: string;
-  debugPort: number;
   onThreads: (threads: SidebarThread[], source: ThreadSource) => void;
-  /** Only with the debugging port; without it the panel keeps its own theme. */
-  onThemeStorage: (storage: ThemeStorage) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
 
 /** Thread list for this PC only, from the local server's shell stream. */
-export function startLocalFeed(options: FeedOptions): ThreadFeed {
+function startLocalFeed(options: FeedOptions, onThreads: (threads: SidebarThread[]) => void): { stop(): void } {
   let stopStream: (() => void) | null = null;
   let stopped = false;
 
@@ -37,7 +36,7 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
 
       stopStream = await openShellStream(options.server, options.token, {
         onValue: (value) => {
-          if (!stopped && model.apply(value) && model.hasSnapshot) options.onThreads(sortSidebar(model.sidebar()), "local");
+          if (!stopped && model.apply(value) && model.hasSnapshot) onThreads(sortSidebar(model.sidebar()));
         },
         onClose: (reason) => {
           console.warn("[t3] shell stream closed:", reason);
@@ -64,32 +63,44 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
   };
 }
 
-/** Every machine through T3's debugging port when it is open, otherwise this PC only. */
+/**
+ * Every machine the panel's T3 page is connected to, read from that page. Until it has loaded, or when it
+ * knows no machine, this PC only. The local stream always runs: it is how the overlay notices T3 going away.
+ */
 export function startThreadFeed(options: FeedOptions): ThreadFeed {
-  let inner: ThreadFeed | null = null;
-  let stopped = false;
+  let localThreads: SidebarThread[] | null = null;
+  let guestThreads: SidebarThread[] | null = null;
+  let guest: { stop(): void } | null = null;
 
-  void startCdpFeed({
-    port: options.debugPort,
-    onThreads: (threads) => options.onThreads(threads, "all-machines"),
-    onThemeStorage: options.onThemeStorage,
-    onClose: () => {
-      if (!stopped) options.onLost();
-    },
-  })
-    .catch((error) => {
-      console.error("[t3] debugging port feed failed", error);
-      return null;
-    })
-    .then((cdp) => {
-      if (stopped) cdp?.stop();
-      else inner = cdp ?? startLocalFeed(options);
-    });
+  const emit = () => {
+    if (guestThreads) options.onThreads(guestThreads, "all-machines");
+    else if (localThreads) options.onThreads(localThreads, "local");
+  };
+
+  const local = startLocalFeed(options, (threads) => {
+    localThreads = threads;
+    if (!guestThreads) emit();
+  });
 
   return {
+    setGuest(contents) {
+      guest?.stop();
+      guest = null;
+      guestThreads = null;
+      if (contents) {
+        guest = startGuestFeed({
+          contents,
+          onThreads: (threads) => {
+            guestThreads = threads;
+            emit();
+          },
+        });
+      }
+      emit();
+    },
     stop() {
-      stopped = true;
-      inner?.stop();
+      local.stop();
+      guest?.stop();
     },
   };
 }
