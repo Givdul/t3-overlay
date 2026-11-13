@@ -1,13 +1,3 @@
-import type {
-  PanelCommand,
-  PanelItemReply,
-  PanelMessage,
-  PanelPathsReply,
-  PanelReply,
-  VoiceEvent,
-  VoiceFinishReply,
-  VoiceStartReply,
-} from "../shared/panel";
 import type { Extent, OverlaySettings, OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
 
 export interface OverlayApi {
@@ -16,23 +6,11 @@ export interface OverlayApi {
   onFocusComposer(listener: () => void): () => void;
   setExtent(extent: Partial<Extent>): void;
   open(target: PanelTarget | null): void;
+  /** T3 moved to this thread on its own (a draft became a thread). Ignored while the panel is closed. */
+  follow(thread: ThreadRef): void;
   setPopover(popover: Popover | null): void;
   threadMenu(thread: ThreadRef): void;
-  /** Main's thread projection for the open panel: snapshots, events and status changes. */
-  onPanel(listener: (message: PanelMessage) => void): () => void;
-  panel(command: PanelCommand): Promise<PanelReply | PanelItemReply | PanelPathsReply>;
-  /** Starts T3's streaming dictation; main holds the media ticket and the socket. */
-  voiceStart(): Promise<VoiceStartReply>;
-  voiceAudio(pcm: ArrayBuffer): void;
-  voiceFinish(): Promise<VoiceFinishReply>;
-  voiceCancel(): void;
-  onVoiceEvent(listener: (event: VoiceEvent) => void): () => void;
-  /** Reconnects the panel to T3 after it ended. */
-  retryPanel(): void;
-  /** Opens an http(s) link in the system browser, never inside the overlay. */
-  openLink(url: string): void;
-  /** Brings T3 Code forward on a thread, or on a new one. */
-  openInT3(target: ThreadRef | "new"): void;
+  onSettle(listener: (thread: ThreadRef) => void): () => void;
   setOpacity(opacity: number): void;
   setLocked(locked: boolean): void;
   setSettings(patch: Partial<OverlaySettings>): void;
@@ -41,6 +19,7 @@ export interface OverlayApi {
   hover(): void;
   escape(): void;
   sent(): void;
+  reportHooks(missing: string[]): void;
 }
 
 declare global {

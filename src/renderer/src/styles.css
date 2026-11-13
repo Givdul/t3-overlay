@@ -1,64 +1,28 @@
 @import "tailwindcss";
 
-/* Fallbacks match T3's dark theme; App.tsx writes the resolved tokens as `--t3-*` on mount. */
+/* Fallbacks match T3's dark theme. The webview reports T3's live tokens and overrides these. */
 :root {
-  --t3-background: #000;
-  --t3-card: #111;
-  --t3-popover: #111;
-  --t3-sidebar: #111;
-  --t3-accent: rgb(255 255 255 / 4%);
-  --t3-message-surface: #1e1e1e;
-  --t3-surface-raised: #111;
-  --t3-code-background: #0f0f0f;
-  --t3-contrast-foreground: oklch(0.97 0 0);
-  --t3-contrast-muted-foreground: oklch(0.708 0 0);
-  --t3-contrast-border: rgb(255 255 255 / 8%);
-  --t3-contrast-accent-foreground: oklch(0.97 0 0);
-  --t3-contrast-card-foreground: oklch(0.97 0 0);
-  --t3-contrast-popover-foreground: oklch(0.97 0 0);
-  --t3-contrast-message-foreground: oklch(0.97 0 0);
-  --t3-contrast-secondary-label: oklch(0.708 0 0);
-  --t3-contrast-icon-muted: oklch(0.708 0 0);
-  --t3-contrast-sidebar-foreground: oklch(0.97 0 0);
-  --t3-contrast-sidebar-muted-foreground: oklch(0.708 0 0);
-  --t3-message-action: oklch(0.571 0.21 264);
-  --t3-message-action-foreground: #fff;
-  --t3-message-action-hover: color-mix(in srgb, oklch(0.571 0.21 264) 90%, #000);
+  --t3-background: oklch(0.205 0 0);
+  --t3-foreground: oklch(0.96 0 0);
+  --t3-muted-foreground: oklch(0.7 0 0);
+  --t3-border: oklch(1 0 0 / 10%);
+  --t3-sidebar: oklch(0.18 0 0);
+  --t3-accent: oklch(1 0 0 / 8%);
+  --t3-popover: oklch(0.23 0 0);
   --t3-info-foreground: oklch(0.707 0.165 254.624);
-  --t3-success-foreground: oklch(0.765 0.177 163.223);
-  --t3-warning-foreground: oklch(0.828 0.189 84.429);
-  --t3-warning-surface: color-mix(in srgb, oklch(0.769 0.188 70.08) 16%, transparent);
-  --t3-error-foreground: oklch(0.704 0.191 22.216);
-  --t3-error-surface: color-mix(in srgb, oklch(0.637 0.237 25.331) 16%, transparent);
-  --t3-primary: oklch(0.571 0.21 264);
-  --t3-ring: oklch(0.571 0.21 264);
-  --t3-app-scrollbar-thumb: rgb(255 255 255 / 8%);
-  --t3-app-scrollbar-thumb-hover: rgb(255 255 255 / 12%);
-  --t3-glass-blur: 16px;
-  --t3-glass-opacity: 80%;
-  --t3-glass-saturation: 1.08;
-  --t3-radius: 0.5rem;
-  --t3-font-size-prompt: 14px;
-  --t3-font-size-code: 13px;
-  --t3-chat-opacity: 85%;
-  --t3-overlap: 16px;
-  /* T3's composer glass sits on --card (light) or --surface-raised (themed), never on the faint
-     --surface-raised mix, which is 20% ink and would disappear at 80% opacity. */
-  --t3-composer-surface: color-mix(in srgb, var(--t3-card) var(--t3-glass-opacity), transparent);
 }
 
 @theme inline {
   --color-t3-bg: var(--t3-background);
-  --color-t3-fg: var(--t3-contrast-foreground);
-  --color-t3-muted: var(--t3-contrast-muted-foreground);
-  --color-t3-border: var(--t3-contrast-border);
+  --color-t3-fg: var(--t3-foreground);
+  --color-t3-muted: var(--t3-muted-foreground);
+  --color-t3-border: var(--t3-border);
   --color-t3-sidebar: var(--t3-sidebar);
   --color-t3-accent: var(--t3-accent);
   --color-t3-popover: var(--t3-popover);
   --color-t3-info: var(--t3-info-foreground);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --font-sans: var(--t3-font-sans, -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif);
-  --font-mono: var(--t3-font-mono, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif;
 }
 
 html,
@@ -73,7 +37,7 @@ body,
 
 body {
   font-family: var(--font-sans);
-  color: var(--t3-contrast-foreground);
+  color: var(--t3-foreground);
   font-size: 13px;
 }
 
@@ -91,279 +55,7 @@ body {
   }
 }
 
-/* "Text outline": a dark outline like WoW's chat, for reading over bright scenery. Text shadows inherit,
-   so one class on the panel's root covers the title, the history and the composer. */
-.text-outline-thin {
-  text-shadow:
-    0 0 2px #000,
-    0 0 3px #000,
-    1px 1px 1px #000;
-}
-
-/* "Thick": WoW's thick outline. Eight hard offsets ring each glyph; the blur fills the gaps between them. */
-.text-outline-thick {
-  text-shadow:
-    -1.5px -1.5px 0 #000,
-    0 -1.5px 0 #000,
-    1.5px -1.5px 0 #000,
-    1.5px 0 0 #000,
-    1.5px 1.5px 0 #000,
-    0 1.5px 0 #000,
-    -1.5px 1.5px 0 #000,
-    -1.5px 0 0 #000,
-    0 0 3px #000;
-}
-
-/* The composer card: T3's glass surface over whatever the panel is docked on. */
-.glass-card {
-  background-color: var(--t3-composer-surface);
-  backdrop-filter: blur(var(--t3-glass-blur)) saturate(var(--t3-glass-saturation));
-}
-
-/* The timeline's scrollbar sits on the docking side, inside the chat window's rounded corners:
-   `direction: rtl` on the scroller moves Chromium's vertical bar to the inline-start edge. */
-.panel-scroll::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.panel-scroll::-webkit-scrollbar-track {
-  margin-block: 12px max(12px, var(--t3-overlap));
+webview {
+  display: flex;
   background: transparent;
-}
-
-.panel-scroll::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: var(--t3-app-scrollbar-thumb);
-}
-
-.panel-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--t3-app-scrollbar-thumb-hover);
-}
-
-/* T3's chat markdown (apps/web/src/index.css, `.chat-markdown`), trimmed to what this renderer emits. */
-.t3-prose {
-  overflow-wrap: anywhere;
-}
-
-.t3-prose > :first-child {
-  margin-top: 0;
-}
-
-.t3-prose > :last-child {
-  margin-bottom: 0;
-}
-
-.t3-prose p,
-.t3-prose ul,
-.t3-prose ol,
-.t3-prose blockquote,
-.t3-prose pre,
-.t3-prose .t3-prose-table {
-  margin: 0.65rem 0;
-}
-
-.t3-prose h1,
-.t3-prose h2,
-.t3-prose h3,
-.t3-prose h4,
-.t3-prose h5,
-.t3-prose h6 {
-  margin: 1.25rem 0 0.5rem;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--t3-contrast-foreground);
-}
-
-.t3-prose h1 {
-  font-size: 1.25rem;
-}
-
-.t3-prose h2 {
-  font-size: 1.125rem;
-}
-
-.t3-prose h3 {
-  font-size: 1rem;
-}
-
-.t3-prose h4,
-.t3-prose h5,
-.t3-prose h6 {
-  font-size: 0.875rem;
-}
-
-.t3-prose h6 {
-  color: var(--t3-contrast-muted-foreground);
-}
-
-.t3-prose ul {
-  padding-inline-start: 1.25rem;
-  list-style-type: disc;
-}
-
-.t3-prose ol {
-  padding-inline-start: 1.25rem;
-  list-style-type: decimal;
-}
-
-.t3-prose ul ul {
-  list-style-type: circle;
-}
-
-.t3-prose ol ol {
-  list-style-type: lower-alpha;
-}
-
-.t3-prose li + li {
-  margin-top: 0.25rem;
-}
-
-.t3-prose li > p {
-  margin: 0;
-}
-
-.t3-prose input[type="checkbox"] {
-  accent-color: var(--t3-primary);
-}
-
-.t3-prose pre {
-  max-width: 100%;
-  overflow-x: auto;
-  border: 1px solid var(--t3-contrast-border);
-  border-radius: 8px;
-  padding: 0.8rem 0.9rem;
-  background: var(--t3-code-background);
-}
-
-.t3-prose pre code {
-  font-family: var(--font-mono);
-  font-size: var(--t3-font-size-code);
-}
-
-.t3-prose :not(pre) > code {
-  border-radius: 4px;
-  padding: 0.1rem 0.3rem;
-  background: var(--t3-code-background);
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-}
-
-.t3-prose blockquote {
-  border-inline-start: 2px solid color-mix(in srgb, currentcolor 35%, transparent);
-  padding-inline-start: 0.8rem;
-}
-
-.t3-prose hr {
-  border-color: var(--t3-contrast-border);
-}
-
-.t3-prose a {
-  color: var(--t3-info-foreground);
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.t3-prose a:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.t3-prose img {
-  display: inline-block;
-  max-width: 100%;
-}
-
-.t3-prose .t3-prose-table {
-  overflow-x: auto;
-}
-
-.t3-prose table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9em;
-}
-
-.t3-prose th,
-.t3-prose td {
-  border: 1px solid var(--t3-contrast-border);
-  padding: 0.3rem 0.5rem;
-  text-align: start;
-}
-
-.t3-prose th {
-  font-weight: 600;
-}
-
-/* A workspace file mention, drawn the way T3's file chip reads inside a message. */
-.mention-chip {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  border: 1px solid var(--t3-contrast-border);
-  border-radius: 6px;
-  padding: 0.05rem 0.35rem;
-  background: var(--t3-code-background);
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  color: var(--t3-contrast-foreground);
-  vertical-align: baseline;
-}
-
-/* Coloured fences: refractor's Prism classes in the panel's own fixed palette. Comments and punctuation
-   follow the theme's muted colour; the rest is one scan of hues chosen to stay legible on T3's dark and
-   light code backgrounds. */
-.t3-prose .token.comment,
-.t3-prose .token.prolog,
-.t3-prose .token.doctype,
-.t3-prose .token.cdata,
-.t3-prose .token.punctuation {
-  color: var(--t3-contrast-muted-foreground);
-}
-
-.t3-prose .token.keyword,
-.t3-prose .token.atrule {
-  color: oklch(0.72 0.14 300);
-}
-
-.t3-prose .token.string,
-.t3-prose .token.char,
-.t3-prose .token.inserted {
-  color: oklch(0.75 0.13 150);
-}
-
-.t3-prose .token.number,
-.t3-prose .token.boolean,
-.t3-prose .token.constant,
-.t3-prose .token.symbol {
-  color: oklch(0.78 0.13 70);
-}
-
-.t3-prose .token.function,
-.t3-prose .token.variable {
-  color: oklch(0.76 0.12 250);
-}
-
-.t3-prose .token.class-name,
-.t3-prose .token.builtin {
-  color: oklch(0.8 0.12 95);
-}
-
-.t3-prose .token.property,
-.t3-prose .token.attr-name,
-.t3-prose .token.operator,
-.t3-prose .token.entity,
-.t3-prose .token.url {
-  color: oklch(0.78 0.09 205);
-}
-
-.t3-prose .token.tag,
-.t3-prose .token.selector,
-.t3-prose .token.deleted,
-.t3-prose .token.important {
-  color: oklch(0.72 0.15 25);
-}
-
-.t3-prose .token.regex {
-  color: oklch(0.79 0.11 120);
 }

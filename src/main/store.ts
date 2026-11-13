@@ -11,14 +11,16 @@ export interface Persisted {
   locked: boolean;
   settings: OverlaySettings;
   lastThread: ThreadRef | null;
-  /** The project the draft starts its next thread in. */
-  lastProjectId: string | null;
 }
 
 export interface Config {
   hotkeys: { focus: string; toggle: string };
-  /** T3's Chrome DevTools port: the sidebar reads every machine and the theme through it. */
-  debugPort: number;
+  /**
+   * Where the chat panel loads T3's web UI from. The hosted app can sign into T3 Connect and reach
+   * every machine; T3 only allows that sign-in over HTTPS on its own domain. "local" uses this PC's
+   * T3 server, which reaches only this PC.
+   */
+  panelOrigin: string;
 }
 
 const DEFAULT_PERSISTED: Persisted = {
@@ -28,12 +30,11 @@ const DEFAULT_PERSISTED: Persisted = {
   locked: false,
   settings: DEFAULT_SETTINGS,
   lastThread: null,
-  lastProjectId: null,
 };
 
 const DEFAULT_CONFIG: Config = {
   hotkeys: { focus: "Control+Shift+Space", toggle: "Control+Shift+H" },
-  debugPort: 9333,
+  panelOrigin: "https://app.t3.codes",
 };
 
 export const statePath = () => join(app.getPath("userData"), "state.json");
@@ -73,6 +74,16 @@ export function loadConfig(): Config {
 
   return {
     hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys },
-    debugPort: Number.isInteger(config.debugPort) && config.debugPort > 0 && config.debugPort < 65536 ? config.debugPort : DEFAULT_CONFIG.debugPort,
+    panelOrigin: panelOrigin(config.panelOrigin),
   };
+}
+
+/** "local", or the origin of an HTTPS URL. Anything else falls back to the hosted app. */
+function panelOrigin(value: string): string {
+  if (value === "local") return value;
+
+  if (!URL.canParse(value)) return DEFAULT_CONFIG.panelOrigin;
+  const url = new URL(value);
+
+  return url.protocol === "https:" ? url.origin : DEFAULT_CONFIG.panelOrigin;
 }

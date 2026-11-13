@@ -1,5 +1,3 @@
-import type { OverlayTheme } from "./tokens";
-
 export type ThreadState = "working" | "approval" | "input" | "completed" | "failed" | "idle";
 
 export interface ThreadRef {
@@ -13,17 +11,6 @@ export type ProjectIcon =
   | { kind: "monogram"; text: string; color: string | null }
   | { kind: "emoji"; emoji: string }
   | { kind: "lucide"; name: string; color: string | null };
-
-/** A project as the panel's labels and the draft picker need it. */
-export interface SidebarProject {
-  environmentId: string;
-  projectId: string;
-  title: string;
-  icon: ProjectIcon;
-  /** New threads in this project default to a worktree, which the panel cannot start. */
-  worktree: boolean;
-  workspaceRoot: string;
-}
 
 export interface SidebarThread extends ThreadRef {
   title: string;
@@ -41,23 +28,22 @@ export type T3Status = "connecting" | "offline" | "connected";
 /** Where the thread list comes from. "local" means the debug port was missing and only this PC is shown. */
 export type ThreadSource = "all-machines" | "local" | "none";
 
-/** A thread, or the draft the `+` button opens. */
-export type PanelTarget = ThreadRef | "draft";
+export type PanelTarget = ThreadRef | "draft" | "connect";
 
 /** "slide" fades the panel in out of the sidebar. */
 export type PanelEntrance = "slide" | "instant";
 
 export interface OverlayState {
+  /** Origin the chat panel loads T3's web UI from. */
+  origin: string | null;
+  /** The panel runs T3's hosted app (signed into T3 Connect) rather than this PC's server. */
+  panelHosted: boolean;
   t3: T3Status;
   source: ThreadSource;
   threads: SidebarThread[];
   working: SidebarThread[];
   /** Threads that stopped working since they were last opened in the panel. */
   unread: ThreadRef[];
-  /** The projects of this PC, local machines only: the panel labels threads by them. */
-  projects: SidebarProject[];
-  /** T3's resolved theme, written to the page as `--t3-*` variables. */
-  theme: OverlayTheme;
   panel: PanelTarget | null;
   /** How the panel last opened. The hotkey opens it at once, straight into typing. */
   panelEntrance: PanelEntrance;
@@ -68,6 +54,7 @@ export interface OverlayState {
   opacity: number;
   locked: boolean;
   settings: OverlaySettings;
+  layoutChanged: boolean;
   hotkeyFailed: string[];
 }
 
@@ -86,8 +73,6 @@ export interface OverlaySettings {
   textOutline: TextOutline;
   /** Fold an empty, unfocused composer into a write button, so the history gets the space. */
   compactComposer: boolean;
-  /** The theme picked in the desktop app. Off shows T3's default theme, following the system appearance. */
-  customTheme: boolean;
 }
 
 export const DEFAULT_SETTINGS: OverlaySettings = {
@@ -96,7 +81,6 @@ export const DEFAULT_SETTINGS: OverlaySettings = {
   openWhenDone: false,
   textOutline: "off",
   compactComposer: true,
-  customTheme: true,
 };
 
 /** Content-sized heights the renderer measures. Main sizes and shapes the window by them. */
@@ -143,3 +127,9 @@ export const threadKey = (thread: ThreadRef) => `${thread.environmentId}:${threa
 export function sameThread(a: PanelTarget | null, b: ThreadRef): boolean {
   return typeof a === "object" && a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;
 }
+
+/**
+ * Main's answer to the webview preload's "guest:client-settings": null on a page that isn't T3's,
+ * otherwise the desktop settings file's text, or null when it can't be read.
+ */
+export type GuestClientSettings = { settings: string | null } | null;

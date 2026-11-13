@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeTheme, screen, session, shell, systemPreferences, type IpcMainEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session, shell, type IpcMainEvent, type Rectangle, type WebContents, type WebFrameMain } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -12,56 +12,53 @@ import {
   slotLeft,
   threadKey,
   type Extent,
+  type GuestClientSettings,
   type OverlaySettings,
   type OverlayState,
   type PanelEntrance,
   type PanelTarget,
   type Popover,
-  type SidebarProject,
   type SidebarThread,
   type ThreadRef,
 } from "../shared/types";
-import type { PanelCommand, PanelMessage, PanelReply, VoiceFinishReply, VoiceStartReply } from "../shared/panel";
-import type { ThemeTokens } from "../shared/tokens";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureSession, readServer, type T3Server } from "./t3";
+import {
+  ensureSession,
+  sessionTarget,
+  readDesktopClientSettings,
+  readServer,
+  T3_PARTITION,
+  type T3Server,
+} from "./t3";
 import { startThreadFeed, type ThreadFeed } from "./threads";
-import { startPanel, type Panel } from "./panel";
-import { startVoice, type VoiceEvent, type VoiceStream } from "./voice";
-import { clientSettingsPath, readAppearance, resolveTheme, type Appearance } from "./theme";
 import { createTray, refreshTray } from "./tray";
-import { launchT3WithDebugPort, restartT3WithDebugPort } from "./launch";
+import { launchT3 } from "./launch";
 import { dispatchCommand } from "./rpc";
 import { snoozeChoices } from "./snooze";
+import { setReducedMotion, trackMotion } from "./motion";
 
 const persisted = loadPersisted();
 let config = loadConfig();
 let win: BrowserWindow | null = null;
+
 let extent: Extent = { sidebarHeight: 160, popoverHeight: null, tooltip: null };
-
-/** T3's desktop client settings (fonts, glass, smoothing). Read from its file, not from a page. */
-let appearance: Appearance | null = null;
-
-/** T3's own page tokens, read over the debugging port. Null without it. */
-let cdpTokens: Partial<ThemeTokens> | null = null;
+let clientSettings: string | null = null;
 let feed: ThreadFeed | null = null;
-let panel: Panel | null = null;
-
-/** One recording at a time, owned by main so the media ticket stays here. */
-let voice: VoiceStream | null = null;
+/** The panel's webview while it shows T3's own page. The thread feed reads every machine from it. */
+let guest: WebContents | null = null;
 
 /** This PC's T3 server while the overlay is connected to it. */
 let localServer: T3Server | null = null;
 
 const state: OverlayState = {
+  origin: null,
+  panelHosted: false,
   t3: "connecting",
   source: "none",
   threads: [],
   working: [],
   unread: [],
-  projects: [],
-  theme: resolveTheme(null, null),
   panel: null,
   panelEntrance: "slide",
   panelSize: persisted.panelSize,
@@ -71,8 +68,11 @@ const state: OverlayState = {
   opacity: persisted.opacity,
   locked: persisted.locked,
   settings: persisted.settings,
+  layoutChanged: false,
   hotkeyFailed: [],
 };
+
+const guestPreload = join(import.meta.dirname, "../preload/guest.cjs");
 
 function save() {
   persisted.panelSize = state.panelSize;
@@ -160,10 +160,9 @@ function update(patch: Partial<OverlayState>) {
 }
 
 function openPanel(target: PanelTarget | null, entrance: PanelEntrance = "slide") {
-  if (target !== null && target !== "draft") persisted.lastThread = target;
+  if (target !== null && typeof target === "object") persisted.lastThread = target;
   save();
   update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
-  panel?.setTarget(target);
 }
 
 /** A thread is read once the panel shows it. */
@@ -210,111 +209,55 @@ function setThreads(threads: SidebarThread[], source: OverlayState["source"]) {
   });
 }
 
-function setProjects(projects: SidebarProject[]) {
-  panel?.setProjects(projects);
-  update({ projects });
-}
-
-// ---------------------------------------------------------------- theme
-
-/** Custom theme follows T3's page; without it the fallback palette follows the system appearance. */
-function applyTheme() {
-  update({ theme: resolveTheme(state.settings.customTheme ? cdpTokens : null, appearance) });
-}
-
 // ---------------------------------------------------------------- T3 connection
 
-/** One pending reconnect at a time: a Retry pressed while T3 is offline must not stack another loop. */
-let reconnectTimer: NodeJS.Timeout | null = null;
-
-function scheduleConnect() {
-  if (reconnectTimer !== null) return;
-
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    void connect();
-  }, 5000);
-}
-
 async function connect() {
-  clearReconnect();
   const server = await readServer();
   localServer = server;
   if (server === null) {
     feed?.stop();
     feed = null;
-    panel?.stop();
-    panel = null;
-    update({ t3: "offline", source: "none", threads: [], working: [] });
-    scheduleConnect();
+    update({ t3: "offline", origin: null, source: "none", threads: [], working: [] });
+    setTimeout(connect, 5000);
     return;
   }
   try {
     const token = await ensureSession(server);
-    appearance = await readAppearance();
-    applyTheme();
-    update({ t3: "connected" });
+    clientSettings = await readDesktopClientSettings();
+    update({ t3: "connected", ...panelOrigin(server) });
     startFeed(server, token);
   } catch (error) {
     console.error("[t3] connect failed", error);
     update({ t3: "offline" });
-    scheduleConnect();
+    setTimeout(connect, 5000);
   }
 }
 
-function clearReconnect() {
-  if (reconnectTimer === null) return;
-
-  clearTimeout(reconnectTimer);
-  reconnectTimer = null;
-}
-
-/** A fresh token after T3 rejected this one: the feed and the panel reconnect with it. */
-function refreshSession(server: T3Server) {
-  void ensureSession(server, true)
-    .then((token) => startFeed(server, token))
-    .catch((error) => console.error("[t3] session refresh failed", error));
+function panelOrigin(server: T3Server): Pick<OverlayState, "origin" | "panelHosted"> {
+  const hosted = config.panelOrigin !== "local";
+  return { origin: hosted ? config.panelOrigin : server.origin, panelHosted: hosted };
 }
 
 function startFeed(server: T3Server, token: string) {
   feed?.stop();
-  panel?.stop();
   feed = startThreadFeed({
     server,
     token,
-    debugPort: config.debugPort,
     onThreads: setThreads,
-    onTokens: (tokens) => {
-      cdpTokens = tokens;
-      applyTheme();
-    },
-    onProjects: setProjects,
-    onAuthExpired: () => refreshSession(server),
+    onAuthExpired: () => void ensureSession(server, true).catch((error) => console.error(error)),
     onLost: () => {
       feed = null;
       update({ t3: "offline", source: "none", threads: [], working: [] });
-      scheduleConnect();
+      setTimeout(connect, 5000);
     },
   });
-  panel = startPanel({
-    server,
-    token,
-    environmentId: server.environmentId,
-    onMessage: sendPanelMessage,
-    onAuthExpired: () => refreshSession(server),
-    lastProjectId: () => persisted.lastProjectId,
-    onLaunched: (thread, projectId) => {
-      persisted.lastProjectId = projectId;
-      save();
-      openPanel(thread);
-    },
-  });
-  panel.setProjects(state.projects);
-  panel.setTarget(state.panel);
+  feed.setGuest(guest);
 }
 
-function sendPanelMessage(message: PanelMessage) {
-  win?.webContents.send("overlay:panel", message);
+function setGuest(next: WebContents | null) {
+  if (next === guest) return;
+  guest = next;
+  feed?.setGuest(next);
 }
 
 // ---------------------------------------------------------------- window
@@ -333,12 +276,15 @@ function createWindow() {
       preload: join(import.meta.dirname, "../preload/index.cjs"),
       contextIsolation: true,
       sandbox: true,
+      webviewTag: true,
     },
   });
-  // The overlay's own page never navigates or opens windows; links go to the system browser.
+  // The overlay's own page never navigates or opens windows; only the T3 webview inside it does.
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.setAlwaysOnTop(true, "screen-saver");
+  win.on("focus", () => setReducedMotion(false));
+  win.on("blur", () => setReducedMotion(true));
   win.on("ready-to-show", () => win?.showInactive());
   win.on("show", () => {
     state.unread = unreadWithout(state.panel);
@@ -349,6 +295,100 @@ function createWindow() {
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void win.loadFile(join(import.meta.dirname, "../renderer/index.html"));
+}
+
+app.on("web-contents-created", (_event, contents) => {
+  contents.on("will-attach-webview", (event, webPreferences, params) => {
+    webPreferences.preload = guestPreload;
+    webPreferences.contextIsolation = true;
+    webPreferences.nodeIntegration = false;
+    webPreferences.sandbox = true;
+    params.partition = T3_PARTITION;
+
+    if (!isT3Origin(params.src)) event.preventDefault();
+  });
+  if (contents.getType() === "webview") {
+    try {
+      contents.debugger.attach("1.3");
+      trackMotion(contents);
+      // Every full load of T3's page opens fresh sockets, so the feed starts over on each one.
+      contents.on("dom-ready", () => {
+        setGuest(null);
+        if (isT3Origin(contents.getURL())) setGuest(contents);
+      });
+      contents.once("destroyed", () => {
+        if (guest === contents) setGuest(null);
+      });
+    } catch (error) {
+      console.warn("[t3] could not attach to the panel", error);
+    }
+    // The panel never opens app windows. Web links from T3's own page go to the default browser; a page
+    // T3 navigated to can't open browser tabs. Electron only consults this because the panel's webview
+    // sets `allowpopups`. Without it, T3's `window.open` for a system-browser link opens nothing.
+    contents.setWindowOpenHandler(({ url }) => {
+      const parsed = parseUrl(url);
+      const web = parsed?.protocol === "https:" || parsed?.protocol === "http:";
+
+      if (parsed !== null && web && isT3Origin(contents.getURL())) void shell.openExternal(parsed.href);
+
+      return { action: "deny" };
+    });
+  }
+});
+
+/** A frame that has gone away throws on access; its requests count as from nowhere. */
+function frameUrl(frame: WebFrameMain | null | undefined): string | undefined {
+  try {
+    return frame?.url;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseUrl(url: string | undefined): URL | null {
+  if (url === undefined || !URL.canParse(url)) return null;
+
+  return new URL(url);
+}
+
+/** Whether `url` is on the T3 origin the panel loads. Only that origin gets the panel's grants and data. */
+function isT3Origin(url: string | undefined): boolean {
+  return state.origin !== null && parseUrl(url)?.origin === new URL(state.origin).origin;
+}
+
+function configureT3Partition() {
+  const t3 = session.fromPartition(T3_PARTITION);
+  // Identity providers such as Google refuse sign-in from pages that announce an embedded Electron app.
+  t3.setUserAgent(t3.getUserAgent().replace(/ (Electron|t3-overlay)\/\S+/g, ""));
+  // The microphone (dictation) and clipboard are T3's own; pages the panel navigates to get neither.
+  t3.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    const media = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
+    const granted = (permission === "media" && !media.includes("video")) || permission.startsWith("clipboard");
+    callback(granted && isT3Origin(details.requestingUrl));
+  });
+  t3.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) => {
+    const granted = (permission === "media" && details.mediaType !== "video") || permission.startsWith("clipboard");
+
+    return granted && isT3Origin(requestingOrigin);
+  });
+  // The session cookie holds T3's bearer token. Only T3's own page sends it, and only to a connected T3 server:
+  // not to another loopback port, not for a page T3 navigated to, and not to a port T3 may have left.
+  t3.webRequest.onBeforeSendHeaders((details, callback) => {
+    const { requestHeaders } = details;
+    const target = sessionTarget(details.url);
+
+    // A navigation counts by where it goes, so only a GET: a form another page posts to T3 carries no session.
+    const fromT3 =
+      details.resourceType === "mainFrame"
+        ? details.method === "GET" && isT3Origin(details.url)
+        : isT3Origin(frameUrl(details.frame));
+
+    if (target === "other port" || (target === "server" && !(fromT3 && state.t3 === "connected"))) {
+      for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === "cookie") delete requestHeaders[name];
+    }
+
+    callback({ requestHeaders });
+  });
 }
 
 // ---------------------------------------------------------------- drag and resize
@@ -429,7 +469,7 @@ function registerHotkeys() {
 
 // ---------------------------------------------------------------- IPC
 
-/** Overlay channels answer only the overlay's own window, never a page it opened. */
+/** Overlay channels answer only the overlay's own window, never the T3 webview or a page it opened. */
 function onHost<A extends unknown[]>(channel: string, listener: (event: IpcMainEvent, ...args: A) => void) {
   ipcMain.on(channel, (event, ...args) => {
     if (event.sender !== win?.webContents) return;
@@ -447,16 +487,6 @@ function handleHost<T>(channel: string, handler: () => T) {
   });
 }
 
-/** The same guard for a handler that takes the renderer's payload. */
-function handleHostWith<A extends unknown[], T>(channel: string, handler: (...args: A) => Promise<T> | T) {
-  ipcMain.handle(channel, (event, ...args) => {
-    if (event.sender !== win?.webContents) throw new Error(`${channel}: not the overlay window`);
-
-    // SAFETY: the sender is the overlay window, whose preload sends this channel's payload type A.
-    return handler(...(args as A));
-  });
-}
-
 handleHost("overlay:init", () => ({ state }));
 
 onHost("overlay:extent", (_event, next: Partial<Extent>) => {
@@ -469,6 +499,10 @@ onHost("overlay:extent", (_event, next: Partial<Extent>) => {
 });
 
 onHost("overlay:open", (_event, target: PanelTarget | null) => openPanel(target));
+
+onHost("overlay:follow", (_event, thread: ThreadRef) => {
+  if (state.panel !== null && !sameThread(state.panel, thread)) openPanel(thread);
+});
 
 onHost("overlay:popover", (_event, popover: Popover | null) => {
   // Until the new popover reports its height, the window's shape covers its largest size.
@@ -484,14 +518,6 @@ async function snooze(server: T3Server, thread: ThreadRef, until: Date) {
   }
 }
 
-async function settle(server: T3Server, thread: ThreadRef) {
-  try {
-    await dispatchCommand(server, await ensureSession(server), { type: "thread.settle", threadId: thread.threadId });
-  } catch (error) {
-    console.error("[t3] settle failed", error);
-  }
-}
-
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const server = state.t3 === "connected" ? localServer : null;
   const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
@@ -501,13 +527,7 @@ onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const onThisPc = server !== null && server.environmentId === thread.environmentId;
 
   Menu.buildFromTemplate([
-    {
-      label: "Settle",
-      enabled: onThisPc,
-      click: () => {
-        if (server !== null) void settle(server, thread);
-      },
-    },
+    { label: "Settle", click: () => win?.webContents.send("overlay:settle", thread) },
     {
       // Menu tooltips only show on macOS, so a disabled item says why in its label.
       label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
@@ -550,103 +570,21 @@ onHost("overlay:sent", () => {
   returnFocus(win);
 });
 
-onHost("overlay:open-link", (_event, url: string) => {
-  if (!URL.canParse(url)) return;
-  const parsed = new URL(url);
-
-  // Only the web opens outside: anything else (file:, t3code:) is not a chat link.
-  if (parsed.protocol === "https:" || parsed.protocol === "http:") void shell.openExternal(parsed.href);
-});
-
-onHost("overlay:open-in-t3", (_event, target: ThreadRef | "new") => {
-  const url =
-    target === "new"
-      ? "t3code://new"
-      : `t3code://threads/${encodeURIComponent(target.environmentId)}/${encodeURIComponent(target.threadId)}`;
-
-  void shell.openExternal(url);
-});
-
-onHost("overlay:panel-retry", () => {
-  if (panel !== null) panel.retry();
-  else void connect();
-});
-
-handleHostWith("overlay:panel-command", (command: PanelCommand) => {
-  const disconnected: PanelReply = { ok: false, error: "T3 is not connected" };
-
-  return panel === null ? disconnected : panel.command(command);
-});
-
-// ---------------------------------------------------------------- dictation
-
-function sendVoiceEvent(event: VoiceEvent) {
-  win?.webContents.send("overlay:voice", event);
-}
-
-handleHostWith("overlay:voice-start", async (): Promise<VoiceStartReply> => {
-  if (localServer === null) return { ok: false, error: "T3 is not connected" };
-
-  // macOS gates the microphone at the OS too; the stock Electron build carries the usage string.
-  if (process.platform === "darwin") {
-    try {
-      if (!(await systemPreferences.askForMediaAccess("microphone"))) {
-        return { ok: false, error: "Microphone access is off. Allow t3-overlay in System Settings → Privacy & Security → Microphone." };
-      }
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : "Microphone access failed" };
-    }
-  }
-
-  try {
-    const token = await ensureSession(localServer);
-
-    voice?.cancel();
-    const stream = startVoice({ server: localServer, token, onEvent: sendVoiceEvent });
-
-    voice = stream;
-
-    try {
-      await stream.start();
-    } catch (error) {
-      // A cancel during the start has already let this stream go; only clear our own registration.
-      if (voice === stream) voice = null;
-
-      throw error;
-    }
-
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-});
-
-onHost("overlay:voice-audio", (_event, pcm: ArrayBuffer) => voice?.feed(pcm));
-
-handleHostWith("overlay:voice-finish", async (): Promise<VoiceFinishReply> => {
-  const active = voice;
-
-  if (active === null) return { ok: false, error: "Voice input is not running" };
-
-  try {
-    return { ok: true, text: await active.finish() };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  } finally {
-    voice = null;
-  }
-});
-
-onHost("overlay:voice-cancel", () => {
-  voice?.cancel();
-  voice = null;
-});
-
 onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
   update({ settings: { ...state.settings, ...patch } });
   save();
+});
 
-  if ("customTheme" in patch) applyTheme();
+onHost("overlay:hooks", (_event, missing: string[]) => {
+  if (missing.length > 0) console.warn("[t3] layout hooks missing", missing);
+  update({ layoutChanged: missing.length > 0 });
+});
+ipcMain.on("guest:client-settings", (event) => {
+  // The guest preload runs on every page the webview loads; only T3's own page gets the desktop settings.
+  const fromT3 = event.sender.getType() === "webview" && isT3Origin(event.senderFrame?.url);
+  const reply: GuestClientSettings = fromT3 ? { settings: clientSettings } : null;
+
+  event.returnValue = reply;
 });
 
 // ---------------------------------------------------------------- app
@@ -657,8 +595,8 @@ const trayActions = {
     update({ locked });
     save();
   },
-  launchT3: () => void launchT3WithDebugPort(config.debugPort),
-  restartT3: () => void restartT3WithDebugPort(config.debugPort),
+  connectMachines: () => openPanel("connect"),
+  launchT3: () => void launchT3(),
   editConfig: () => void shell.openPath(configPath()),
   quit: () => app.quit(),
 };
@@ -666,39 +604,15 @@ const trayActions = {
 if (!app.requestSingleInstanceLock()) app.quit();
 
 app.whenReady().then(() => {
+  configureT3Partition();
   createWindow();
   createTray(trayActions);
   registerHotkeys();
-  // The page asks for the microphone and the clipboard; only the overlay's own window may have them.
-  session.defaultSession.setPermissionCheckHandler(
-    (contents, permission, _origin, details) =>
-      contents === win?.webContents &&
-      ((permission === "media" && details.mediaType === "audio") || permission === "clipboard-sanitized-write"),
-  );
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
-    callback(
-      contents === win?.webContents &&
-        ((permission === "media" && mediaTypes.length > 0 && mediaTypes.every((kind) => kind === "audio")) ||
-          permission === "clipboard-sanitized-write"),
-    );
-  });
   watch(configPath(), () => {
     config = loadConfig();
     registerHotkeys();
+    if (state.t3 === "connected") void readServer().then((server) => server && update(panelOrigin(server)));
   });
-  // T3 writes its appearance settings whenever the user changes a font size, the glass or smoothing.
-  let appearanceTimer: NodeJS.Timeout | null = null;
-  watch(clientSettingsPath(), () => {
-    if (appearanceTimer) clearTimeout(appearanceTimer);
-    appearanceTimer = setTimeout(() => {
-      void readAppearance().then((next) => {
-        appearance = next;
-        applyTheme();
-      });
-    }, 150);
-  });
-  nativeTheme.on("updated", applyTheme);
   screen.on("display-removed", layout);
   screen.on("display-metrics-changed", layout);
   void connect();

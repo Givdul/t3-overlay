@@ -1,61 +1,51 @@
-import type { ThemeTokens } from "../shared/tokens";
-import type { SidebarProject, SidebarThread, ThreadSource } from "../shared/types";
-import { startCdpFeed, type ShellItemLike } from "./cdp";
-import { AuthExpiredError, connect, type T3Rpc } from "./rpc";
+import type { WebContents } from "electron";
+import type { SidebarThread, ThreadSource } from "../shared/types";
+import { startGuestFeed } from "./cdp";
+import { AuthExpiredError, openShellStream } from "./rpc";
 import { ShellModel, sortSidebar } from "./shell";
 import type { T3Server } from "./t3";
 
 export interface ThreadFeed {
+  /** The panel's webview once it shows T3's own page, or null when it stops showing it. */
+  setGuest(contents: WebContents | null): void;
   stop(): void;
 }
 
 export interface FeedOptions {
   server: T3Server;
   token: string;
-  debugPort: number;
   onThreads: (threads: SidebarThread[], source: ThreadSource) => void;
-  /** Only with the debugging port; without it the panel uses the fallback palette. */
-  onTokens: (tokens: Partial<ThemeTokens>) => void;
-  /** This machine's projects, so the panel can label threads and resolve their checkout. */
-  onProjects: (projects: SidebarProject[]) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
 
 /** Thread list for this PC only, from the local server's shell stream. */
-export function startLocalFeed(options: FeedOptions): ThreadFeed {
+function startLocalFeed(options: FeedOptions, onThreads: (threads: SidebarThread[]) => void): { stop(): void } {
   let stopStream: (() => void) | null = null;
-  let rpc: T3Rpc<ShellItemLike, never> | null = null;
   let stopped = false;
 
   void (async () => {
     try {
-      const model = new ShellModel(options.server.environmentId, options.server.label);
+      // SAFETY: T3's environment descriptor always names its environmentId; label is optional.
+      const descriptor = (await (await fetch(`${options.server.origin}/.well-known/t3/environment`)).json()) as {
+        environmentId: string;
+        label?: string;
+      };
 
-      rpc = await connect<ShellItemLike, never>(options.server, options.token);
+      const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
 
-      if (stopped) {
-        rpc.close();
-
-        return;
-      }
-
-      stopStream = rpc.stream(
-        "orchestration.subscribeShell",
-        {},
-        {
-          onValue: (value) => {
-            if (stopped || !model.apply(value) || !model.hasSnapshot) return;
-            options.onThreads(sortSidebar(model.sidebar()), "local");
-            options.onProjects(model.projects());
-          },
-          onClose: (reason) => {
-            console.warn("[t3] shell stream closed:", reason);
-
-            if (!stopped) options.onLost();
-          },
+      stopStream = await openShellStream(options.server, options.token, {
+        onValue: (value) => {
+          if (!stopped && model.apply(value) && model.hasSnapshot) onThreads(sortSidebar(model.sidebar()));
         },
-      );
+        onClose: (reason) => {
+          console.warn("[t3] shell stream closed:", reason);
+          if (!stopped) options.onLost();
+        },
+      });
+
+      // Stopped while the stream was opening.
+      if (stopped) stopStream();
     } catch (error) {
       if (stopped) return;
 
@@ -69,41 +59,48 @@ export function startLocalFeed(options: FeedOptions): ThreadFeed {
     stop() {
       stopped = true;
       stopStream?.();
-      // The shell socket is this feed's own: stopping the feed must not leave it open.
-      rpc?.close();
-      rpc = null;
     },
   };
 }
 
-/** Every machine through T3's debugging port when it is open, otherwise this PC only. */
+/**
+ * Every machine the panel's T3 page is connected to, read from that page. Until it has loaded, or when it
+ * knows no machine, this PC only. The local stream always runs: it is how the overlay notices T3 going away.
+ */
 export function startThreadFeed(options: FeedOptions): ThreadFeed {
-  let inner: ThreadFeed | null = null;
-  let stopped = false;
+  let localThreads: SidebarThread[] | null = null;
+  let guestThreads: SidebarThread[] | null = null;
+  let guest: { stop(): void } | null = null;
 
-  void startCdpFeed({
-    port: options.debugPort,
-    environmentId: options.server.environmentId,
-    onThreads: (threads) => options.onThreads(threads, "all-machines"),
-    onTokens: options.onTokens,
-    onProjects: options.onProjects,
-    onClose: () => {
-      if (!stopped) options.onLost();
-    },
-  })
-    .catch((error) => {
-      console.error("[t3] debugging port feed failed", error);
-      return null;
-    })
-    .then((cdp) => {
-      if (stopped) cdp?.stop();
-      else inner = cdp ?? startLocalFeed(options);
-    });
+  const emit = () => {
+    if (guestThreads) options.onThreads(guestThreads, "all-machines");
+    else if (localThreads) options.onThreads(localThreads, "local");
+  };
+
+  const local = startLocalFeed(options, (threads) => {
+    localThreads = threads;
+    if (!guestThreads) emit();
+  });
 
   return {
+    setGuest(contents) {
+      guest?.stop();
+      guest = null;
+      guestThreads = null;
+      if (contents) {
+        guest = startGuestFeed({
+          contents,
+          onThreads: (threads) => {
+            guestThreads = threads;
+            emit();
+          },
+        });
+      }
+      emit();
+    },
     stop() {
-      stopped = true;
-      inner?.stop();
+      local.stop();
+      guest?.stop();
     },
   };
 }
