@@ -181,9 +181,15 @@ window.addEventListener(
   },
   true,
 );
-window.addEventListener("submit", (event) => {
-  if (inComposer(event.target)) watchForSend();
-}, true);
+
+// T3's send button cancels the form submit its click would fire, so the click itself is the send.
+window.addEventListener(
+  "click",
+  (event) => {
+    if (event.target instanceof Element && event.target.closest(`${COMPOSER_FORM} button[type="submit"]`)) watchForSend();
+  },
+  true,
+);
 
 function inComposer(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(COMPOSER_FORM) !== null;
@@ -198,10 +204,17 @@ function sendsFromKey(target: EventTarget | null): boolean {
 
 // T3 sends on Enter without a form submit, and Enter also picks slash-menu items.
 // A send is the composer going from text to empty right after Enter or the send button.
+// Enter on the focused send button also clicks it, so one send can arrive twice.
+let sendCheck: ReturnType<typeof setTimeout> | null = null;
+
 function watchForSend() {
   if (voiceActive()) return watchForDictatedSend();
   if (composerText() === "") return;
-  setTimeout(() => {
+
+  if (sendCheck !== null) clearTimeout(sendCheck);
+  sendCheck = setTimeout(() => {
+    sendCheck = null;
+
     if (composerText() === "") ipcRenderer.sendToHost("sent");
   }, 250);
 }
