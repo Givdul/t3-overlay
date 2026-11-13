@@ -1,5 +1,5 @@
-import { THEME_STORAGE_KEY, THEME_TOKENS, type ThemeTokens } from "../shared/tokens";
-import type { SidebarProject, SidebarThread } from "../shared/types";
+import { THEME_STORAGE_KEY, type ThemeStorage } from "../shared/theme";
+import type { SidebarThread } from "../shared/types";
 import { ShellModel, sortSidebar } from "./shell";
 
 // Reads the thread list of every machine from T3's own window over the Chrome DevTools Protocol.
@@ -40,22 +40,15 @@ interface Seed {
 
 const parse = <T>(value: unknown): T => (typeof value === "string" ? JSON.parse(value) : value) as T;
 
-// T3's page resolves its palette into CSS variables; the computed values are exactly what it shows,
-// custom themes and the appearance contrast setting included.
-const THEME_READ_SCRIPT = `Object.fromEntries(${JSON.stringify(THEME_TOKENS)}.map((name) => [
-  name,
-  getComputedStyle(document.documentElement).getPropertyValue("--" + name).trim(),
-]))`;
+const THEME_READ_SCRIPT = `Object.fromEntries(Object.keys(localStorage)
+  .filter((key) => ${THEME_STORAGE_KEY.toString()}.test(key))
+  .map((key) => [key, localStorage.getItem(key)]))`;
 
 export interface CdpFeedOptions {
   port: number;
-  /** The machine T3 runs on; only its projects feed the panel. */
-  environmentId: string;
   onThreads: (threads: SidebarThread[]) => void;
-  /** T3's own page tokens, on attach and whenever the theme changes in the desktop app. */
-  onTokens: (tokens: Partial<ThemeTokens>) => void;
-  /** This machine's projects, after every shell update. */
-  onProjects: (projects: SidebarProject[]) => void;
+  /** T3's selected theme, on attach and whenever it changes in the desktop app. */
+  onThemeStorage: (storage: ThemeStorage) => void;
   onClose: () => void;
 }
 
@@ -63,8 +56,7 @@ export interface CdpFeedOptions {
 export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): void } | null> {
   let targets: { type: string; url: string; webSocketDebuggerUrl: string }[];
   try {
-    // SAFETY: /json/list answers Chrome's own target descriptors, the fields read below.
-    targets = (await (await fetch(`http://127.0.0.1:${options.port}/json/list`, { signal: AbortSignal.timeout(2000) })).json()) as typeof targets;
+    targets = await (await fetch(`http://127.0.0.1:${options.port}/json/list`, { signal: AbortSignal.timeout(2000) })).json();
   } catch {
     return null;
   }
@@ -93,10 +85,7 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
   const partial = new Map<string, string>();
   let stopped = false;
 
-  const emit = () => {
-    options.onThreads(sortSidebar([...models.values()].flatMap((model) => model.sidebar())));
-    options.onProjects(models.get(options.environmentId)?.projects() ?? []);
-  };
+  const emit = () => options.onThreads(sortSidebar([...models.values()].flatMap((model) => model.sidebar())));
 
   async function seed() {
     const response = await send("Runtime.evaluate", { expression: SEED_SCRIPT, awaitPromise: true, returnByValue: true });
@@ -125,12 +114,10 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     emit();
   }
 
-  async function readTokens() {
+  async function readTheme() {
     const response = await send("Runtime.evaluate", { expression: THEME_READ_SCRIPT, returnByValue: true });
-    // SAFETY: the page returns one computed value per token name, as strings.
-    const tokens = response.result?.result?.value as Partial<ThemeTokens> | undefined;
-
-    if (tokens) options.onTokens(tokens);
+    const storage = response.result?.result?.value as ThemeStorage | undefined;
+    if (storage) options.onThemeStorage(storage);
   }
 
   let reseedTimer: NodeJS.Timeout | null = null;
@@ -194,8 +181,7 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     } else if (message.method?.startsWith("DOMStorage.domStorageItem") && message.params.storageId?.isLocalStorage) {
       // ItemsCleared has no key; every other event names the key that changed.
       const key = message.params.key as string | undefined;
-
-      if (key === undefined || THEME_STORAGE_KEY.test(key)) void readTokens();
+      if (key === undefined || THEME_STORAGE_KEY.test(key)) void readTheme();
     }
   });
   socket.addEventListener("close", () => {
@@ -207,7 +193,7 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
     await send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
     await send("DOMStorage.enable");
     await seed();
-    await readTokens();
+    await readTheme();
   } catch (error) {
     // The caller falls back to the local feed, so this socket must not keep feeding threads.
     stopped = true;
@@ -224,13 +210,7 @@ export async function startCdpFeed(options: CdpFeedOptions): Promise<{ stop(): v
   };
 }
 
-/** The shell stream item fields this feed reads (OrchestrationV2ShellStreamItem). */
-export type ShellItemLike = {
-  kind: string;
-  sequence?: number;
-  thread?: { id?: string; projectId?: string };
-  snapshot?: { threads?: { id?: string; projectId?: string }[]; projects?: { id?: string }[] };
-};
+type ShellItemLike = { kind: string; [key: string]: unknown };
 
 const SHELL_KINDS = new Set(["thread.updated", "thread.removed", "project.updated", "project.removed"]);
 

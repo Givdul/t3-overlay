@@ -40,8 +40,8 @@ export async function restartT3WithDebugPort(port: number) {
     type: "question",
     buttons: ["Restart T3", "Cancel"],
     defaultId: 1,
-    message: "Restart T3 Code with the debug port?",
-    detail: "Running turns are interrupted. T3 opens again with a local debugging port, so the overlay can list threads from every machine and follow T3's theme.",
+    message: "Restart T3 Code with overlay support?",
+    detail: "Running turns are interrupted. T3 opens again with a local debugging port so the overlay can list threads from every machine.",
   });
   if (response !== 0) return;
 
@@ -54,7 +54,7 @@ export async function restartT3WithDebugPort(port: number) {
   execFile("taskkill", ["/PID", String(main)], { windowsHide: true });
   for (let i = 0; i < 60 && isAlive(main); i++) await new Promise((resolve) => setTimeout(resolve, 500));
   if (isAlive(main)) {
-    void dialog.showMessageBox({ type: "warning", message: "T3 Code did not quit. Quit it yourself, then use Launch T3 with the debug port." });
+    void dialog.showMessageBox({ type: "warning", message: "T3 Code did not quit. Quit it yourself, then use Launch T3 with overlay support." });
     return;
   }
   await launchT3WithDebugPort(port);
