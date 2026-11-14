@@ -169,8 +169,6 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,
-    state.source === "local" ? "Only this PC: connect machines in the panel (see tray)" : null,
-    state.layoutChanged ? "T3 layout changed: some chrome may show in the panel" : null,
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
   ].filter((warning) => warning !== null);
 
@@ -185,7 +183,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
           notes: warnings.map((text) => ({ text, color: "text-amber-300" })),
         };
       case "new":
-        return { title: "New thread" };
+        return { title: "New thread in T3" };
       case "working":
         return { title: `${state.working.length} working` };
     }
@@ -222,11 +220,11 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
           <button
             type="button"
-            className={`${button} ${pressable} my-1.5 ${state.panel === "draft" ? "bg-t3-accent text-t3-fg" : ""}`}
-            aria-label="New thread"
+            className={`${button} ${pressable} my-1.5`}
+            aria-label="New thread in T3"
             {...tooltip.anchor("new")}
             disabled={state.t3 !== "connected"}
-            onClick={() => window.overlay.open(state.panel === "draft" ? null : "draft")}
+            onClick={() => window.overlay.openInT3("new")}
           >
             <Plus size={18} />
           </button>

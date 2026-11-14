@@ -8,11 +8,8 @@ export default defineConfig({
   preload: {
     build: {
       rollupOptions: {
-        input: {
-          index: resolve(import.meta.dirname, "src/preload/index.ts"),
-          guest: resolve(import.meta.dirname, "src/guest/index.ts"),
-        },
-        // Sandboxed preloads (host window and the T3 webview) must be CommonJS.
+        input: { index: resolve(import.meta.dirname, "src/preload/index.ts") },
+        // A sandboxed preload must be CommonJS.
         output: { format: "cjs", entryFileNames: "[name].cjs" },
       },
     },

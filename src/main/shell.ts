@@ -30,7 +30,7 @@ interface ProjectShell {
   projectIcon?: { kind: string; name?: string; color?: string; text?: string; emoji?: string } | null;
 }
 
-type ShellItem =
+export type ShellItem =
   | {
       kind: "snapshot";
       snapshot: { threads: ThreadShell[]; projects: ProjectShell[] };
@@ -119,6 +119,11 @@ export class ShellModel {
     }
   }
 
+  /** Every project's checkout, so the overlay can open one in T3 Code itself. */
+  projectWorkspaces(): { projectId: string; workspaceRoot: string }[] {
+    return [...this.projects.values()].map((project) => ({ projectId: project.id, workspaceRoot: project.workspaceRoot }));
+  }
+
   sidebar(): SidebarThread[] {
     const now = Date.now();
     // A subagent waiting on the user puts its top-level thread in the same state, as in T3's sidebar.
@@ -143,6 +148,7 @@ export class ShellModel {
         environmentId: this.environmentId,
         threadId: thread.id,
         title: thread.title,
+        projectId: thread.projectId,
         projectName: project?.title ?? "",
         icon: projectIcon(project, project ? this.favicons.get(`${project.workspaceRoot}\n${project.faviconPath ?? ""}`) : undefined),
         environmentLabel: this.environmentLabel,

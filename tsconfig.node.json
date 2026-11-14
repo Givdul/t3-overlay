@@ -11,5 +11,5 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["electron.vite.config.ts", "src/main", "src/preload", "src/guest", "src/shared"]
+  "include": ["electron.vite.config.ts", "src/main", "src/preload", "src/shared"]
 }
