@@ -44,8 +44,8 @@ export interface OverlayState {
   popover: Popover | null;
   side: "left" | "right";
   sidebarOffsetY: number;
-  /** Most thread rows the sidebar shows. With fewer threads, it is only as tall as they are. */
-  sidebarRows: number;
+  /** Height in pixels of the thread list. With fewer threads, the sidebar is only as tall as they are. */
+  sidebarListHeight: number;
   opacity: number;
   locked: boolean;
   settings: OverlaySettings;
@@ -105,7 +105,7 @@ export type DragKind = "move" | "resize" | "sidebar-top" | "sidebar-bottom";
 
 export const SIDEBAR_WIDTH = 52;
 
-/** A 36px icon button and one 6px gap. Must match the h-[42px] slot class in Sidebar.tsx. Each item's slot owns its gap, so a slot opening or closing never jumps. */
+/** A 36px icon button and one 6px gap. Must match the h-[42px] slot class in Sidebar.tsx. Each item's slot owns its gap, so a slot opening or closing never jumps. One row is also the shortest the resized list gets. */
 export const SIDEBAR_SLOT_HEIGHT = 42;
 
 /** Border, padding, the logo and the new-thread button with their gaps. */
@@ -121,13 +121,13 @@ export const POPOVER_SIZE: Record<Popover, { width: number; height: number }> = 
 };
 export const PANEL_MIN = { width: 360, height: 300 };
 
-/** The sidebar's settled height for a row count. */
-export function sidebarHeight(threads: number, working: number, rows: number): number {
+/** The sidebar's settled height with the thread list at `listHeight`. Fewer threads make it shorter. */
+export function sidebarHeight(threads: number, working: number, listHeight: number): number {
   return (
     SIDEBAR_FIXED_HEIGHT +
     (working > 0 ? SIDEBAR_SLOT_HEIGHT : 0) +
     (threads > 0 ? SIDEBAR_DIVIDER_HEIGHT : 0) +
-    Math.min(threads, rows) * SIDEBAR_SLOT_HEIGHT
+    Math.min(threads * SIDEBAR_SLOT_HEIGHT, listHeight)
   );
 }
 

@@ -114,7 +114,7 @@ function T3Wordmark({ className }: { className?: string }) {
   );
 }
 
-/** A thin strip on the sidebar's edge that sizes it by thread rows. */
+/** A thin strip on the sidebar's edge that resizes the thread list. */
 function SidebarEdge({ kind }: { kind: "sidebar-top" | "sidebar-bottom" }) {
   return (
     <div
@@ -130,7 +130,7 @@ function SidebarEdge({ kind }: { kind: "sidebar-top" | "sidebar-bottom" }) {
 
 export function Sidebar({ state }: { state: OverlayState }) {
   const [scrolledToEnd, setScrolledToEnd] = useState(false);
-  const moreBelow = state.threads.length > state.sidebarRows && !scrolledToEnd;
+  const moreBelow = state.threads.length * SIDEBAR_SLOT_HEIGHT > state.sidebarListHeight && !scrolledToEnd;
   const left = state.side === "left" ? 0 : undefined;
   const right = state.side === "right" ? 0 : undefined;
   const threads = usePresence(state.threads, threadKey);
@@ -139,14 +139,14 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
   // The height once every slot has settled. Main sizes the window by it, and on Windows the window's shape
   // also clips drawing: a growing sidebar reports at once, a shrinking one after its last slide ends.
-  const settledHeight = sidebarHeight(state.threads.length, state.working.length, state.sidebarRows);
+  const settledHeight = sidebarHeight(state.threads.length, state.working.length, state.sidebarListHeight);
 
   const departedAt = Math.max(working.departedAt, divider.departedAt, threads.departedAt);
   const reported = useRef<number | null>(null);
-  const reportedRows = useRef(state.sidebarRows);
+  const reportedListHeight = useRef(state.sidebarListHeight);
   useLayoutEffect(() => {
-    const resizedDown = state.sidebarRows < reportedRows.current;
-    reportedRows.current = state.sidebarRows;
+    const resizedDown = state.sidebarListHeight < reportedListHeight.current;
+    reportedListHeight.current = state.sidebarListHeight;
 
     if (settledHeight === reported.current) return;
 
@@ -155,7 +155,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
       window.overlay.setExtent({ sidebarHeight: settledHeight });
     };
 
-    // A shrinking row count resizes the window at once; a departing thread waits for its slot's slide.
+    // A shrinking list resizes the window at once; a departing thread waits for its slot's slide.
     if (reported.current === null || settledHeight > reported.current || resizedDown || reducedMotion()) {
       report();
 
@@ -165,7 +165,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
     const timer = setTimeout(report, Math.max(0, departedAt + SLIDE_MS - performance.now()));
 
     return () => clearTimeout(timer);
-  }, [settledHeight, departedAt, state.sidebarRows]);
+  }, [settledHeight, departedAt, state.sidebarListHeight]);
 
   const warnings = [
     state.t3 === "offline" ? "T3 Code is not running" : null,
@@ -251,13 +251,13 @@ export function Sidebar({ state }: { state: OverlayState }) {
             </div>
           ))}
 
-          {/* The chosen rows fit; the rest scroll. The side and bottom padding keep state badges from being clipped.
+          {/* The chosen height fits; the rest scroll. The side and bottom padding keep state badges from being clipped.
               Each slot holds the gap above its icon, so the list starts at the divider and clips its top 2px,
               where it started when the gap sat outside it. */}
           <div
             className="-mx-1 -mb-1 flex shrink-0 flex-col overflow-y-auto px-1 pb-1 [clip-path:inset(2px_0_0)] [scrollbar-width:none]"
             style={{
-              maxHeight: state.sidebarRows * SIDEBAR_SLOT_HEIGHT + 4,
+              maxHeight: state.sidebarListHeight + 4,
               maskImage: moreBelow ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)" : undefined,
             }}
             onScroll={(event) => {
@@ -282,7 +282,8 @@ export function Sidebar({ state }: { state: OverlayState }) {
             ))}
           </div>
         </div>
-        {!state.locked && (
+        {/* With no threads there is no list to resize, and a stray drag would save it at one row. */}
+        {!state.locked && state.threads.length > 0 && (
           <>
             <SidebarEdge kind="sidebar-top" />
             <SidebarEdge kind="sidebar-bottom" />

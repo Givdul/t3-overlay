@@ -1,14 +1,21 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
-import { DEFAULT_SETTINGS, TEXT_OUTLINES, type OverlaySettings, type TextOutline, type ThreadRef } from "../shared/types";
+import {
+  DEFAULT_SETTINGS,
+  SIDEBAR_SLOT_HEIGHT,
+  TEXT_OUTLINES,
+  type OverlaySettings,
+  type TextOutline,
+  type ThreadRef,
+} from "../shared/types";
 
 export interface Persisted {
   /** Sidebar top-left in screen DIPs, tied to the display it was placed on. */
   anchor: { displayId: number; x: number; y: number } | null;
   panelSize: { width: number; height: number };
-  /** Most thread rows the sidebar shows. */
-  sidebarRows: number;
+  /** Height in pixels of the thread list. */
+  sidebarListHeight: number;
   opacity: number;
   locked: boolean;
   settings: OverlaySettings;
@@ -22,7 +29,8 @@ export interface Config {
 const DEFAULT_PERSISTED: Persisted = {
   anchor: null,
   panelSize: { width: 440, height: 560 },
-  sidebarRows: 5,
+  // Five rows, as the thread list was before it took a pixel height.
+  sidebarListHeight: 5 * SIDEBAR_SLOT_HEIGHT,
   opacity: 0.85,
   locked: false,
   settings: DEFAULT_SETTINGS,
