@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
   SIDEBAR_SLOT_HEIGHT,
   TEXT_OUTLINES,
+  type LastLaunch,
   type OverlaySettings,
   type TextOutline,
   type ThreadRef,
@@ -20,6 +21,8 @@ export interface Persisted {
   locked: boolean;
   settings: OverlaySettings;
   lastThread: ThreadRef | null;
+  /** Where the last new thread started, and with which model: the next one starts from there. */
+  lastLaunch: LastLaunch | null;
 }
 
 export interface Config {
@@ -35,6 +38,7 @@ const DEFAULT_PERSISTED: Persisted = {
   locked: false,
   settings: DEFAULT_SETTINGS,
   lastThread: null,
+  lastLaunch: null,
 };
 
 const DEFAULT_CONFIG: Config = {

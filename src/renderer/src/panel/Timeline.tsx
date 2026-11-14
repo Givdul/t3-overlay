@@ -41,15 +41,13 @@ interface TimelineProps {
   view: PanelView;
   pending: PendingRequests;
   onLink: LinkHandler;
-  /** Set for a thread on another machine: its approvals open in T3, which alone can answer them. */
-  onOpenInT3: (() => void) | null;
 }
 
-export function Timeline({ view, pending, onLink, onOpenInT3 }: TimelineProps) {
+export function Timeline({ view, pending, onLink }: TimelineProps) {
   return (
     <div className="flex min-w-0 flex-col gap-2">
       {view.rows.map((row) => (
-        <TimelineRow key={row.sourceItemId} item={row.item} pending={pending} onLink={onLink} onOpenInT3={onOpenInT3} />
+        <TimelineRow key={row.sourceItemId} item={row.item} pending={pending} onLink={onLink} />
       ))}
       {view.queued.map((message) => (
         <div key={message.id} className="flex min-w-0 flex-col items-end gap-1">
@@ -66,7 +64,7 @@ export function Timeline({ view, pending, onLink, onOpenInT3 }: TimelineProps) {
   );
 }
 
-function TimelineRow({ item, pending, onLink, onOpenInT3 }: Omit<TimelineProps, "view"> & { item: PanelItem }) {
+function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { item: PanelItem }) {
   switch (item.type) {
     case "user_message":
       return <UserMessageRow item={item} onLink={onLink} />;
@@ -102,7 +100,7 @@ function TimelineRow({ item, pending, onLink, onOpenInT3 }: Omit<TimelineProps, 
       const request = pending.approvals.find((candidate) => candidate.id === item.requestId);
 
       // A resolved approval was answered in T3 or here; its card is gone and leaves no row behind.
-      return request === undefined ? null : <ApprovalCard request={request} openInT3={onOpenInT3} />;
+      return request === undefined ? null : <ApprovalCard request={request} />;
     }
 
     case "user_input_request": {

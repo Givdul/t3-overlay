@@ -20,14 +20,29 @@ interface ThreadShell {
   snoozedUntil?: string | null;
   pinnedAt?: string | null;
   pinOrderKey?: string | null;
+  /** Read by the composer: the `/` menu lists the thread's provider's commands. */
+  modelSelection?: { instanceId: string; model: string };
+  /** Read by the composer: the `@` menu searches the checkout the thread runs in. */
+  worktreePath?: string | null;
 }
 
-interface ProjectShell {
+/** A model choice as T3 stores it (packages/contracts modelSelection.ts). */
+export interface WireModelSelection {
+  instanceId: string;
+  model: string;
+  options?: { id: string; value: string | boolean }[] | Record<string, string | boolean>;
+}
+
+export interface ProjectShell {
   id: string;
   title: string;
   workspaceRoot: string;
   faviconPath?: string | null;
   projectIcon?: { kind: string; name?: string; color?: string; text?: string; emoji?: string } | null;
+  /** Older servers keep a project's defaults here instead of in the settings' project overrides. */
+  defaultModelSelection?: WireModelSelection | null;
+  defaultThreadEnvMode?: "local" | "worktree" | null;
+  archivedAt?: string | null;
 }
 
 export type ShellItem =
@@ -119,9 +134,17 @@ export class ShellModel {
     }
   }
 
-  /** Every project's checkout, so the overlay can open one in T3 Code itself. */
-  projectWorkspaces(): { projectId: string; workspaceRoot: string }[] {
-    return [...this.projects.values()].map((project) => ({ projectId: project.id, workspaceRoot: project.workspaceRoot }));
+  /** The projects a new thread can start in: every one not archived, by title. */
+  projectList(): ProjectShell[] {
+    return [...this.projects.values()].filter((project) => !project.archivedAt).sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  project(projectId: string): ProjectShell | undefined {
+    return this.projects.get(projectId);
+  }
+
+  thread(threadId: string): ThreadShell | undefined {
+    return this.threads.get(threadId);
   }
 
   sidebar(): SidebarThread[] {

@@ -17,7 +17,8 @@ import type {
   PanelView,
 } from "../shared/panel";
 import type { ThreadRef } from "../shared/types";
-import { AuthExpiredError, commandFrame, connect, type T3Rpc, type ThreadCommand, type WirePayload } from "./rpc";
+import { uploadAttachments } from "./compose";
+import { AuthExpiredError, commandFrame, connect, type T3Rpc, type ThreadCommand } from "./rpc";
 import type { T3Server } from "./t3";
 
 // One thread's projection, trimmed for the panel. Main owns the socket (the token lives here) and
@@ -175,14 +176,10 @@ interface WireTurnItemReply {
   item?: WireItem;
 }
 
-/** The reply shapes this connection asks for: a projection and a turn item. */
-type WireReply = WireProjection | WireTurnItemReply;
-
 export interface PanelOptions {
+  /** The machine this panel reads; a thread on any other machine is that machine's panel's to read. */
   server: T3Server;
   token: string;
-  /** This PC's environment id; a thread from anywhere else is main/remote.ts's to read. */
-  environmentId: string;
   onMessage: (message: PanelMessage) => void;
   onAuthExpired: () => void;
 }
@@ -202,7 +199,7 @@ const STALE_DELAY_MS = 500;
 
 export function startPanel(options: PanelOptions): Panel {
   let target: ThreadRef | null = null;
-  let rpc: T3Rpc<WireStreamItem, WireReply> | null = null;
+  let rpc: T3Rpc<WireStreamItem> | null = null;
   let stopStream: (() => void) | null = null;
   /** The last sequence main forwarded: a resubscribe resumes after it. */
   let lastSequence = 0;
@@ -219,10 +216,8 @@ export function startPanel(options: PanelOptions): Panel {
     stopSubscription();
     lastSequence = 0;
 
-    if (next === null) return;
-
-    // A thread on another machine: main/remote.ts reads it with the MCP session this socket cannot use.
-    if (next.environmentId !== options.environmentId) return;
+    // A thread on another machine is that machine's panel's to read.
+    if (next === null || next.environmentId !== options.server.environmentId) return;
 
     void subscribe(next.threadId);
   }
@@ -243,10 +238,10 @@ export function startPanel(options: PanelOptions): Panel {
     generation = current;
     options.onMessage({ kind: "status", status: "connecting" });
 
-    let connection: T3Rpc<WireStreamItem, WireReply>;
+    let connection: T3Rpc<WireStreamItem>;
 
     try {
-      connection = await connect<WireStreamItem, WireReply>(options.server, options.token);
+      connection = await connect<WireStreamItem>(options.server, options.token);
     } catch (error) {
       if (current !== generation) return;
 
@@ -264,9 +259,9 @@ export function startPanel(options: PanelOptions): Panel {
     }
 
     rpc = connection;
-    const payload: WirePayload = { threadId, requestCompletionMarker: true };
 
-    if (lastSequence > 0) payload.afterSequence = lastSequence;
+    const payload =
+      lastSequence > 0 ? { threadId, requestCompletionMarker: true, afterSequence: lastSequence } : { threadId, requestCompletionMarker: true };
 
     stopStream = connection.stream("orchestration.subscribeThread", payload, {
       onValue: (value) => {
@@ -370,17 +365,22 @@ export function startPanel(options: PanelOptions): Panel {
         case "send": {
           const text = next.text.trim();
 
-          if (text === "") return refuse("Write a message first");
+          if (text === "" && next.attachments.length === 0) return refuse("Write a message first");
+
+          if (rpc === null) return refuse("T3 is not connected");
+
+          const attachments = await uploadAttachments(options.server, rpc, next.attachments);
 
           await dispatch({
             type: "message.dispatch",
             threadId: thread.threadId,
             messageId: randomUUID(),
             text,
-            attachments: [],
+            attachments,
             createdBy: "user",
             creationSource: "web",
             dispatchMode: { type: next.queue ? "queue_after_active" : "start_immediately" },
+            ...(next.freshContext ? { freshContext: true as const } : {}),
           });
           // A queued message has no turn-item event until its run starts: re-read so the row shows at once.
           await pushSnapshot();

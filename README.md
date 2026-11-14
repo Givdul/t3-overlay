@@ -1,8 +1,8 @@
 # t3-overlay
 
 An always-on-top T3 Code overlay for gaming. It shows a thin, movable sidebar of thread icons and a
-chat panel drawn by the overlay itself, reading the open thread from T3 Code: this PC's server, and
-the machines it is linked to. Nothing in T3 is forked, so updating T3 updates the overlay with it.
+chat panel drawn by the overlay itself, reading threads from T3 Code: this PC's server, and any other
+machine paired with the overlay. Nothing in T3 is forked, so updating T3 updates the overlay with it.
 
 ## Run
 
@@ -20,87 +20,86 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
   status. Every message, command, file change, plan and notice T3's own timeline shows is drawn here.
 - Send: Enter starts a turn, or queues behind the active run while one is going. Shift+Enter is a
   newline.
+- Attach: paste, drop or pick files. Images go up to 10 MB and other files to 50 MB, T3's limits.
+- `@` searches the thread's checkout for files and inserts a link to the picked one, as T3 does.
+- `/` lists the provider's commands and skills. `/clear` starts the next message without the
+  thread's earlier context.
 - Stop: the stop button interrupts the active run.
 - Answer: approval and question cards resolve the request in the thread.
 - Settle and snooze from a thread's right-click menu. Both go through T3's own commands.
-- Open in T3: the title row hands the thread to the T3 Code app (`t3code://threads/...`). The `+`
-  button opens T3's new-thread composer for the newest thread's project.
+- Open in T3: the title row hands the thread to the T3 Code app (`t3code://threads/...`).
 
 The panel keeps the overlay's own look: the chat background opacity, the message-bubble opacity and
 the text outline settings all apply to it.
 
+## New threads
+
+The `+` button opens a new-thread composer with T3's own choices:
+
+- the machine and the project,
+- the model and its options, such as reasoning effort,
+- the permission mode,
+- local or a new worktree, the branch or the worktree's base branch, and whether the worktree starts
+  from origin.
+
+It starts from the project's defaults in that machine's T3 settings, and from the machine, project
+and model of the last thread started here. Sending starts the thread with one
+`orchestration.launchThread`, as T3's composer does: T3 creates the worktree and names its branch. A
+local thread on another branch switches the project's checkout to it first, as T3's branch picker
+does. The panel then opens on the new thread.
+
 ## Other machines
 
-The sidebar also lists the threads of the machines this PC's T3 Code is linked to. Opening one shows
-its history, the machine it is on, and **Open in T3**. The composer sends to it (Enter queues behind
-a running turn), Stop interrupts it, questions are answered in their card, and its row menu settles
-and snoozes it.
+The overlay is a client of each machine's T3 server, the way T3 Code's own window is. Pair a machine
+once:
 
-An approval, and anything else T3 will not take over the link, becomes a card with **Open in T3**:
-that opens the same thread in T3 Code, which alone can answer it. T3 also refuses to act on a thread
-that runs above the link's access — a full-access thread, until remote control is granted — and the
-same card carries T3's own message. The composer keeps the message so it can be sent there.
+1. On that machine, open T3 Code's Settings → Sharing & access and create a link, or run
+   `t3 pair --tailscale`.
+2. Copy the link, then choose **Pair a machine from the clipboard…** in the overlay's tray menu.
+3. Confirm the machine's name and address. The overlay spends the one-time code there.
 
-T3 Code reaches another machine over a peer link, and the overlay acts through this PC's server.
-Both are needed:
+The machine has to be reachable from this PC by that address: on the same network with T3's network
+access on, or over Tailscale. T3 Connect's relay only serves T3's own apps.
 
-- a link on this PC: `t3 environment link` (T3 Code's Machines settings do the same),
-- Settings → Labs → **Linked environments** turned on.
-
-A machine that does not answer is noted in the logo's tooltip, and its threads are not listed until
-it answers again.
-
-### Remote control
-
-T3 mints the overlay's `/mcp` session from its own CLI, and such a session carries no runtime-mode
-ceiling: T3 caps it at approval-required and refuses to act on a thread that runs at full access.
-The tray's **Grant remote control…** asks T3 for a session that does, through the sign-in T3 offers an
-MCP app. It runs only from that click, and it shows a confirmation first: full access on every linked
-machine, plus any ceiling a managed policy puts on it. Nothing is granted unless that is answered yes.
-
-The grant covers this PC's T3 acting on the linked machines for the overlay: sending, stopping,
-settling and answering on any thread there, whatever its runtime mode. It is sealed on this PC beside
-the other session tokens and used only for T3's `/mcp` endpoint. It lasts 30 days with no refresh;
-when it expires or T3 rejects it, the overlay drops it and goes back to its capped session, and the
-tray offers the grant again.
-
-**Revoke remote control** replaces the item while a grant exists. It deletes the sealed grant and
-revokes its session in T3, which `t3 auth session list` lists as an `mcp-client` session labelled
-`t3-overlay grant`.
+A paired machine's threads list beside this PC's, live, and everything the panel and the new-thread
+composer do works there too. T3 issues the session for 30 days with no refresh. When it ends, the
+logo's tooltip says the machine needs pairing again. **Forget** in the tray deletes the session on
+this PC. T3 does not let a session revoke itself, so revoke `t3-overlay` in that machine's Settings →
+Sharing & access to end it there.
 
 ## Deliberate losses
 
 The panel is a thin client, not T3's page. Some actions are only in T3 Code; the title row's
 **Open in T3** opens the same thread there:
 
-- starting a thread with a picked model or permission mode (the `+` button opens T3's composer),
-- `/` slash commands and `@` file mentions,
-- attachments and pasted images,
-- dictation.
+- dictation,
+- `@` mentions of threads, machines and pull requests, and T3's `/side`, `/btw` and `/model`.
 
 ## How it connects
 
 - Reads the local T3 server from `~/.t3/userdata/server-runtime.json` and checks its pid is alive
   before trusting the port.
-- Mints its own session once with `t3 auth session issue --ttl 90d` and keeps it sealed with
-  `safeStorage`. The token stays in the main process: the renderer only ever sees typed thread events
-  and sends commands back.
-- Mints a second session for T3's `/mcp` endpoint (`--subject mcp-client`, with both orchestration
-  scopes), sealed in its own file, to read and act on the other machines' threads through this PC's
-  server. The tray can replace it with a full-access grant, described above.
-- Every URL is built from that pid-verified server origin. This PC's thread rows come from the
-  server's shell stream; the other machines' come from its `/mcp` endpoint.
+- Mints its own session there once with `t3 auth session issue --ttl 90d` and keeps it sealed with
+  `safeStorage`.
+- Exchanges a paired machine's one-time code at its `/oauth/token` for a bearer session, sealed in
+  its own file with the address it was paired over. Before sending the token, the overlay checks that
+  address still answers as the same T3 environment.
+- Every token stays in the main process: the renderer only ever sees typed thread events and sends
+  commands back. Each machine gets one shell socket for its thread rows and the composer's calls, and
+  one socket for the open thread.
 
 ## Controls
 
 | Action | How |
 | --- | --- |
 | Focus the composer | `Ctrl+Shift+Space`, or the write button under the chat |
+| Start a thread | The `+` button |
 | Hide or show the overlay | `Ctrl+Shift+H` |
 | Move | Drag the T3 logo |
 | Show more or fewer threads | Drag the sidebar's top or bottom edge |
 | Lock position, chat background opacity, text outline, bubbles | Right-click the T3 logo |
 | Settle or snooze a thread | Right-click its icon |
+| Pair or forget a machine | The tray menu |
 | Close the panel and return to the game | `Esc` |
 
 Hotkeys live in the config file (tray: "Edit config").

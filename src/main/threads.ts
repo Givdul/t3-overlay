@@ -1,57 +1,48 @@
 import type { SidebarThread } from "../shared/types";
-import { AuthExpiredError, connect } from "./rpc";
+import { AuthExpiredError, connect, type T3Requests } from "./rpc";
 import { ShellModel, sortSidebar, type ShellItem } from "./shell";
 import type { T3Server } from "./t3";
 
-export interface ThreadFeed {
+/** One machine's shell stream. Its socket also carries the composer's calls to that machine. */
+export interface ThreadFeed extends T3Requests {
+  /** The machine's threads and projects, as its shell stream last told them. */
+  readonly shell: ShellModel;
   stop(): void;
-}
-
-/** A project's checkout, as T3 knows it. */
-export interface ProjectWorkspace {
-  projectId: string;
-  workspaceRoot: string;
 }
 
 export interface FeedOptions {
   server: T3Server;
   token: string;
   onThreads: (threads: SidebarThread[]) => void;
-  /** The shell's projects: main opens one in T3 when the panel's `+` asks for a new thread. */
-  onProjects: (projects: ProjectWorkspace[]) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
 
-/** Thread list for this PC only, from the local server's shell stream. */
+/** Thread list for one machine, from its server's shell stream. */
 export function startThreadFeed(options: FeedOptions): ThreadFeed {
+  const shell = new ShellModel(options.server.environmentId, options.server.label);
+  let rpc: T3Requests | null = null;
   let stopStream: (() => void) | null = null;
   let stopped = false;
 
   void (async () => {
     try {
-      // SAFETY: T3's environment descriptor always names its environmentId; label is optional.
-      const descriptor = (await (await fetch(`${options.server.origin}/.well-known/t3/environment`)).json()) as {
-        environmentId: string;
-        label?: string;
-      };
+      const connection = await connect<ShellItem>(options.server, options.token);
 
-      const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
-      const rpc = await connect<ShellItem, never>(options.server, options.token);
-
-      stopStream = () => rpc.close();
-      rpc.stream("orchestration.subscribeShell", {}, {
+      stopStream = () => connection.close();
+      connection.stream("orchestration.subscribeShell", {}, {
         onValue: (value) => {
-          if (stopped || !model.apply(value) || !model.hasSnapshot) return;
+          if (stopped || !shell.apply(value) || !shell.hasSnapshot) return;
 
-          options.onThreads(sortSidebar(model.sidebar()));
-          options.onProjects(model.projectWorkspaces());
+          options.onThreads(sortSidebar(shell.sidebar()));
         },
         onClose: (reason) => {
-          console.warn("[t3] shell stream closed:", reason);
+          rpc = null;
+          console.warn(`[t3] ${options.server.label} shell stream closed:`, reason);
           if (!stopped) options.onLost();
         },
       });
+      rpc = connection;
 
       // Stopped while the stream was opening.
       if (stopped) stopStream();
@@ -59,14 +50,24 @@ export function startThreadFeed(options: FeedOptions): ThreadFeed {
       if (stopped) return;
 
       if (error instanceof AuthExpiredError) options.onAuthExpired();
-      else console.error("[t3] shell stream failed", error);
+      else console.error(`[t3] ${options.server.label} shell stream failed`, error);
       options.onLost();
     }
   })();
 
+  function connected(): T3Requests {
+    if (rpc === null) throw new Error(`${options.server.label} is not connected`);
+
+    return rpc;
+  }
+
   return {
+    shell,
+    request: <T>(tag: string, payload: object) => connected().request<T>(tag, payload),
+    command: (tag: string, payload: object) => connected().command(tag, payload),
     stop() {
       stopped = true;
+      rpc = null;
       stopStream?.();
     },
   };
