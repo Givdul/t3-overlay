@@ -284,7 +284,8 @@ export function Sidebar({ state }: { state: OverlayState }) {
             ))}
           </div>
         </div>
-        {!state.locked && (
+        {/* With no threads there is no list to resize, and a stray drag would save it at one row. */}
+        {!state.locked && state.threads.length > 0 && (
           <>
             <SidebarEdge kind="sidebar-top" />
             <SidebarEdge kind="sidebar-bottom" />

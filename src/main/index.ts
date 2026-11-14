@@ -406,8 +406,15 @@ let dragTimer: NodeJS.Timeout | null = null;
 /** The bottom the sidebar keeps while its top edge is dragged. */
 let dragBottom: number | null = null;
 
-/** While a sidebar edge moves, main sizes the sidebar and the renderer's height reports wait for the release. */
+/** While a sidebar edge moves, main sizes the sidebar itself instead of by the renderer's height reports. */
 let sidebarDragging = false;
+
+/** Sizes the sidebar from main's own list height, so the fixed edge holds instead of following a report a round trip later. */
+function sizeSidebar() {
+  extent.sidebarHeight = sidebarHeight(state.threads.length, state.working.length, state.sidebarListHeight);
+
+  if (dragBottom !== null) persisted.anchor = { ...anchor(), y: Math.round(dragBottom - extent.sidebarHeight) };
+}
 
 function maxSidebarListHeight(area: Rectangle, top: number, bottom: number, kind: DragKind): number {
   // The edge that stays put leaves only the work area on the other side of it to grow into.
@@ -460,11 +467,7 @@ function startDrag(kind: DragKind) {
       if (listHeight === state.sidebarListHeight) return;
 
       state.sidebarListHeight = listHeight;
-      // Main sizes the sidebar from its own height on every tick, so the fixed edge holds instead of following
-      // the renderer's report a round trip later.
-      extent.sidebarHeight = sidebarHeight(state.threads.length, state.working.length, listHeight);
-
-      if (kind === "sidebar-top") persisted.anchor = { ...anchor(), y: Math.round(bottom0 - extent.sidebarHeight) };
+      sizeSidebar();
     }
 
     // A move re-renders only when the sidebar shifts inside the window, such as at a screen edge.
@@ -476,13 +479,10 @@ function endDrag() {
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = null;
 
-  // Main sized the sidebar while the edge moved, so settle that height and pin the bottom a top-edge drag kept.
+  // Settle the height main sized the sidebar by, and pin the bottom a top-edge drag kept.
   if (sidebarDragging) {
-    const height = sidebarHeight(state.threads.length, state.working.length, state.sidebarListHeight);
-    extent.sidebarHeight = height;
+    sizeSidebar();
     sidebarDragging = false;
-
-    if (dragBottom !== null) persisted.anchor = { ...anchor(), y: Math.round(dragBottom - height) };
     dragBottom = null;
 
     if (layout()) broadcast();
@@ -546,14 +546,15 @@ function handleHost<T>(channel: string, handler: () => T) {
 
 handleHost("overlay:init", () => ({ state }));
 
-onHost("overlay:extent", (_event, reported: Partial<Extent>) => {
-  // While a sidebar edge is dragged, main sizes the sidebar; a report that lags a tick would pull it back.
-  const next = sidebarDragging ? { ...reported, sidebarHeight: extent.sidebarHeight } : reported;
+onHost("overlay:extent", (_event, next: Partial<Extent>) => {
+  const before = JSON.stringify(extent);
+  extent = { ...extent, ...next };
+
+  // A thread arriving mid-drag still resizes the sidebar, by main's height rather than a report a tick behind.
+  if (sidebarDragging) sizeSidebar();
 
   // By value: the tooltip's box is an object, and every report of it is a new one.
-  if (JSON.stringify({ ...extent, ...next }) === JSON.stringify(extent)) return;
-
-  extent = { ...extent, ...next };
+  if (JSON.stringify(extent) === before) return;
 
   layout();
   broadcast();
