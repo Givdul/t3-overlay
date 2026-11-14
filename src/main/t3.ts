@@ -47,6 +47,29 @@ export async function readServer(): Promise<T3Server | null> {
 }
 
 const tokenPath = () => join(app.getPath("userData"), "t3-session.bin");
+const mcpTokenPath = () => join(app.getPath("userData"), "t3-mcp-session.bin");
+
+/** `t3 auth session issue`'s flags for the shell's session: the scope `/ws` and the HTTP API accept. */
+const SESSION_ARGS = ["auth", "session", "issue", "--ttl", "90d", "--label", "t3-overlay", "--token-only"];
+
+/**
+ * The `/mcp` session. `mcp-client` is the one subject T3's MCP endpoint accepts, and the only scope it
+ * needs for this phase is reading: writes to another machine come later, with a wider scope.
+ */
+const MCP_SESSION_ARGS = [
+  "auth",
+  "session",
+  "issue",
+  "--ttl",
+  "90d",
+  "--label",
+  "t3-overlay-remote",
+  "--subject",
+  "mcp-client",
+  "--scope",
+  "orchestration:read",
+  "--token-only",
+];
 
 /** The last token this process minted or loaded, so a session without an OS keychain isn't minted again per reconnect. */
 let knownToken: string | null = null;
@@ -64,9 +87,8 @@ async function loadToken(): Promise<string | null> {
   }
 }
 
-function mintToken(): Promise<string> {
+function mintToken(args: string[]): Promise<string> {
   const cli = join(T3_HOME, "bin", process.platform === "win32" ? "t3.cmd" : "t3");
-  const args = ["auth", "session", "issue", "--ttl", "90d", "--label", "t3-overlay", "--token-only"];
   return new Promise((resolve, reject) => {
     // .cmd shims run through cmd.exe. The arguments are fixed, so nothing is interpolated.
     const [file, fileArgs] =
@@ -118,7 +140,7 @@ async function establishSession(server: T3Server, forceMint: boolean): Promise<s
   let token = forceMint ? null : await loadToken();
   let current = token === null ? null : await authSession(server, token);
   if (token === null || current === null || !current.authenticated) {
-    token = await mintToken();
+    token = await mintToken(SESSION_ARGS);
     current = await authSession(server, token);
     if (!current.authenticated) throw new Error("T3 rejected a freshly minted session token");
 
@@ -139,4 +161,80 @@ async function saveToken(token: string) {
   } catch (error) {
     console.warn("[t3] keeping the session token in memory only", error);
   }
+}
+
+/** The MCP session serves one environment: a token minted for another T3 belongs to another machine. */
+interface McpSession {
+  environmentId: string;
+  token: string;
+}
+
+let knownMcpSession: McpSession | null = null;
+
+async function loadMcpSession(server: T3Server): Promise<string | null> {
+  if (knownMcpSession !== null) return knownMcpSession.environmentId === server.environmentId ? knownMcpSession.token : null;
+
+  if (!existsSync(mcpTokenPath())) return null;
+
+  // As with the shell's token, a corrupt file or one sealed by another keychain is replaced.
+  try {
+    // SAFETY: saveMcpSession writes this shape, sealed with safeStorage.
+    const stored = JSON.parse((await safeStorage.decryptStringAsync(await readFile(mcpTokenPath()))).result) as McpSession;
+
+    if (stored.environmentId !== server.environmentId) return null;
+
+    knownMcpSession = stored;
+
+    return stored.token;
+  } catch {
+    return null;
+  }
+}
+
+async function saveMcpSession(environmentId: string, token: string) {
+  if (!safeStorage.isEncryptionAvailable()) return;
+
+  try {
+    await writeFile(mcpTokenPath(), await safeStorage.encryptStringAsync(JSON.stringify({ environmentId, token })));
+  } catch (error) {
+    console.warn("[t3] keeping the MCP session in memory only", error);
+  }
+}
+
+let pendingMcpSession: { key: string; token: Promise<string> } | null = null;
+
+/**
+ * Returns the token T3's MCP endpoint takes, minting it once. It cannot be checked against
+ * `/api/auth/session`, which refuses this subject, so a token T3 no longer knows shows up as a 401
+ * from the endpoint and `forceMint` replaces it. Concurrent calls share one attempt, as ensureSession's do.
+ */
+export function ensureMcpSession(server: T3Server, forceMint = false): Promise<string> {
+  const key = `${server.environmentId} ${forceMint}`;
+
+  if (pendingMcpSession?.key === key) return pendingMcpSession.token;
+
+  const before = pendingMcpSession?.token.catch(() => null) ?? Promise.resolve(null);
+
+  const token = before
+    .then(() => establishMcpSession(server, forceMint))
+    .finally(() => {
+      if (pendingMcpSession?.token === token) pendingMcpSession = null;
+    });
+
+  pendingMcpSession = { key, token };
+
+  return token;
+}
+
+async function establishMcpSession(server: T3Server, forceMint: boolean): Promise<string> {
+  let token = forceMint ? null : await loadMcpSession(server);
+
+  if (token === null) {
+    token = await mintToken(MCP_SESSION_ARGS);
+    await saveMcpSession(server.environmentId, token);
+  }
+
+  knownMcpSession = { environmentId: server.environmentId, token };
+
+  return token;
 }

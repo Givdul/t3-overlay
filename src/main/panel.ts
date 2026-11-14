@@ -181,7 +181,7 @@ type WireReply = WireProjection | WireTurnItemReply;
 export interface PanelOptions {
   server: T3Server;
   token: string;
-  /** This PC's environment id; a thread from anywhere else cannot be read here. */
+  /** This PC's environment id; a thread from anywhere else is main/remote.ts's to read. */
   environmentId: string;
   onMessage: (message: PanelMessage) => void;
   onAuthExpired: () => void;
@@ -221,11 +221,8 @@ export function startPanel(options: PanelOptions): Panel {
 
     if (next === null) return;
 
-    if (next.environmentId !== options.environmentId) {
-      options.onMessage({ kind: "status", status: "ended", reason: "This thread is on another machine" });
-
-      return;
-    }
+    // A thread on another machine: main/remote.ts reads it with the MCP session this socket cannot use.
+    if (next.environmentId !== options.environmentId) return;
 
     void subscribe(next.threadId);
   }

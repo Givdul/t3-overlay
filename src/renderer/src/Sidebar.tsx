@@ -172,6 +172,10 @@ export function Sidebar({ state }: { state: OverlayState }) {
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
   ].filter((warning) => warning !== null);
 
+  // A machine that does not answer has no row to explain itself, and it is not this PC's trouble:
+  // the note says so in the tooltip, and the dot stays for what is wrong here.
+  const machineNotes = state.machines.filter((machine) => !machine.reachable).map((machine) => `${machine.label} is unreachable`);
+
   const tooltip = useTooltip();
 
   const tipFor = (id: string): TooltipContent | undefined => {
@@ -180,7 +184,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
         return {
           title: "T3 overlay",
           detail: "Drag to move, right-click for settings",
-          notes: warnings.map((text) => ({ text, color: "text-amber-300" })),
+          notes: [...warnings, ...machineNotes].map((text) => ({ text, color: "text-amber-300" })),
         };
       case "new":
         return { title: "New thread in T3" };

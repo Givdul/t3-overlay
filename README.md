@@ -1,8 +1,8 @@
 # t3-overlay
 
 An always-on-top T3 Code overlay for gaming. It shows a thin, movable sidebar of thread icons and a
-chat panel drawn by the overlay itself, reading the open thread from this PC's T3 Code server. Nothing
-in T3 is forked, so updating T3 updates the overlay with it.
+chat panel drawn by the overlay itself, reading the open thread from T3 Code: this PC's server, and
+the machines it is linked to. Nothing in T3 is forked, so updating T3 updates the overlay with it.
 
 ## Run
 
@@ -29,6 +29,21 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 The panel keeps the overlay's own look: the chat background opacity, the message-bubble opacity and
 the text outline settings all apply to it.
 
+## Other machines
+
+The sidebar also lists the threads of the machines this PC's T3 Code is linked to. Opening one shows
+its history, the machine it is on, and **Open in T3**. Those threads are read-only for now: send,
+stop, approvals, settle and snooze stay in T3 Code.
+
+T3 Code reaches another machine over a peer link, and the overlay reads it through this PC's server.
+Both are needed:
+
+- a link on this PC: `t3 environment link` (T3 Code's Machines settings do the same),
+- Settings → Labs → **Linked environments** turned on.
+
+A machine that does not answer is noted in the logo's tooltip, and its threads are not listed until
+it answers again.
+
 ## Deliberate losses
 
 The panel is a thin client, not T3's page. Some actions are only in T3 Code; the title row's
@@ -39,7 +54,7 @@ The panel is a thin client, not T3's page. Some actions are only in T3 Code; the
 - attachments and pasted images,
 - dictation.
 
-Threads on other machines are not listed yet.
+A thread on another machine has its history and **Open in T3**, and nothing that writes to it.
 
 ## How it connects
 
@@ -48,8 +63,11 @@ Threads on other machines are not listed yet.
 - Mints its own session once with `t3 auth session issue --ttl 90d` and keeps it sealed with
   `safeStorage`. The token stays in the main process: the renderer only ever sees typed thread events
   and sends commands back.
-- Every URL is built from that pid-verified server origin. The sidebar's thread list comes from the
-  server's shell stream.
+- Mints a second, read-only session for T3's `/mcp` endpoint (`--subject mcp-client --scope
+  orchestration:read`), sealed in its own file, to read the other machines' threads through this
+  PC's server.
+- Every URL is built from that pid-verified server origin. This PC's thread rows come from the
+  server's shell stream; the other machines' come from its `/mcp` endpoint.
 
 ## Controls
 

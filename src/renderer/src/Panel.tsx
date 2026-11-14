@@ -75,10 +75,15 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const title = view?.thread.title || known?.title || "Thread";
   const contextLabel = [known?.projectName, known?.environmentLabel].filter(Boolean).join(" · ");
 
+  // A thread on another machine is read through this PC's T3 server: its history and status show
+  // here, and everything that acts on it waits in T3 (Open in T3) until it can be sent to.
+  const remote = target !== null && state.localEnvironmentId !== null && target.environmentId !== state.localEnvironmentId;
+  const machine = remote && target !== null ? (state.machines.find((candidate) => candidate.environmentId === target.environmentId)?.label ?? null) : null;
+
   const statusLabel =
     panel.status === "ended" ? "Disconnected" : panel.status === "connecting" ? "Connecting…" : running !== null ? "Working" : reply ? "Waiting for you" : "";
 
-  const canCompose = target !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
+  const canCompose = !remote && target !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
   const folded = canCompose && settings.compactComposer && !reply && !composerOpen && text === "" && !busy && !focused;
   const titleInCard = settings.titleInComposer && canCompose && !folded;
   const visible = target !== null;
@@ -160,7 +165,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         } as CSSProperties
       }
     >
-      {!titleInCard && <TitleRow title={title} target={target} />}
+      {!titleInCard && <TitleRow title={title} target={target} machine={machine} />}
 
       <div className="relative flex min-h-0 flex-1">
         <div ref={scroller} onScroll={onScroll} className={historyClass} style={{ direction: side === "left" ? "rtl" : "ltr" }}>
@@ -254,13 +259,14 @@ function outlineClass(outline: OverlaySettings["textOutline"]): string {
   return outline === "off" ? "" : `text-outline-${outline}`;
 }
 
-function TitleRow({ title, target }: { title: string; target: PanelTarget }) {
+function TitleRow({ title, target, machine }: { title: string; target: PanelTarget; machine: string | null }) {
   return (
     <div
       className="flex h-[34px] shrink-0 items-center gap-2 truncate rounded-t-[12px] border border-[var(--t3-chat-border)] bg-[var(--t3-chat-bg)] pr-1.5 pl-3 text-[13px] font-semibold text-t3-fg"
       style={{ borderBottomColor: "color-mix(in srgb, var(--t3-border) 50%, transparent)" }}
     >
       <span className="min-w-0 flex-1 truncate">{title}</span>
+      {machine !== null && <span className="max-w-[45%] shrink-0 truncate text-[11px] font-normal text-t3-muted">{machine}</span>}
       <OpenInT3 target={target} />
     </div>
   );

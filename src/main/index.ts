@@ -26,9 +26,10 @@ import {
 import type { PanelCommand, PanelMessage } from "../shared/panel";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureSession, readServer, type T3Server } from "./t3";
+import { ensureMcpSession, ensureSession, readServer, type T3Server } from "./t3";
 import { startThreadFeed, type ProjectWorkspace, type ThreadFeed } from "./threads";
 import { startPanel, type Panel } from "./panel";
+import { startRemote, type Remote } from "./remote";
 import { createTray, refreshTray } from "./tray";
 import { launchT3, openProjectInT3 } from "./launch";
 import { dispatchCommand } from "./rpc";
@@ -41,6 +42,11 @@ let win: BrowserWindow | null = null;
 let extent: Extent = { sidebarHeight: 160, popoverHeight: null, tooltip: null };
 let feed: ThreadFeed | null = null;
 let panel: Panel | null = null;
+let remote: Remote | null = null;
+
+/** This PC's threads from the shell stream, and the other machines' from /mcp. */
+let localThreads: SidebarThread[] = [];
+let remoteThreads: SidebarThread[] = [];
 
 /** This PC's T3 server while the overlay is connected to it. */
 let localServer: T3Server | null = null;
@@ -50,6 +56,8 @@ let workspaces: ProjectWorkspace[] = [];
 
 const state: OverlayState = {
   t3: "connecting",
+  localEnvironmentId: null,
+  machines: [],
   threads: [],
   working: [],
   unread: [],
@@ -160,6 +168,7 @@ function openPanel(target: PanelTarget, entrance: PanelEntrance = "slide") {
   save();
   update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
   panel?.setTarget(target);
+  remote?.setTarget(target);
 }
 
 /** A thread is read once the panel shows it. */
@@ -193,6 +202,20 @@ function nextUnread(threads: SidebarThread[]): ThreadRef[] {
   return unread;
 }
 
+/**
+ * The sidebar's list. This PC's rows arrive from the shell stream and the other machines' from the
+ * MCP poll; either can change first, and both are merged here.
+ */
+function setLocalThreads(threads: SidebarThread[]) {
+  localThreads = threads;
+  setThreads([...localThreads, ...remoteThreads]);
+}
+
+function setRemoteThreads(threads: SidebarThread[]) {
+  remoteThreads = threads;
+  setThreads([...localThreads, ...remoteThreads]);
+}
+
 function setThreads(threads: SidebarThread[]) {
   // A thread that was working a moment ago and is now completed just finished.
   const finished = threads.find((thread) => thread.state === "completed" && lastStates.get(threadKey(thread)) === "working");
@@ -219,14 +242,16 @@ async function connect() {
   localServer = server;
   if (server === null) {
     stopConnection();
-    update({ t3: "offline", threads: [], working: [] });
+    stopRemote();
+    update({ t3: "offline", threads: [], working: [], machines: [] });
     setTimeout(connect, 5000);
     return;
   }
   try {
     const token = await ensureSession(server);
-    update({ t3: "connected" });
+    update({ t3: "connected", localEnvironmentId: server.environmentId });
     startFeed(server, token);
+    void connectRemote(server);
   } catch (error) {
     console.error("[t3] connect failed", error);
     update({ t3: "offline" });
@@ -241,12 +266,18 @@ function stopConnection() {
   panel = null;
 }
 
+function stopRemote() {
+  remote?.stop();
+  remote = null;
+  remoteThreads = [];
+}
+
 function startFeed(server: T3Server, token: string) {
   stopConnection();
   feed = startThreadFeed({
     server,
     token,
-    onThreads: setThreads,
+    onThreads: setLocalThreads,
     onProjects: (projects) => {
       if (JSON.stringify(projects) === JSON.stringify(workspaces)) return;
 
@@ -255,7 +286,8 @@ function startFeed(server: T3Server, token: string) {
     onAuthExpired: () => refreshSession(server),
     onLost: () => {
       stopConnection();
-      update({ t3: "offline", threads: [], working: [] });
+      stopRemote();
+      update({ t3: "offline", threads: [], working: [], machines: [] });
       setTimeout(connect, 5000);
     },
   });
@@ -267,6 +299,37 @@ function startFeed(server: T3Server, token: string) {
     onAuthExpired: () => refreshSession(server),
   });
   panel.setTarget(state.panel);
+}
+
+/** The other machines, read through this PC's MCP endpoint with the session made for it. */
+async function connectRemote(server: T3Server) {
+  try {
+    const token = await ensureMcpSession(server);
+
+    // Another connect, or none, happened while the token was loading.
+    if (localServer !== server) return;
+
+    stopRemote();
+    remote = startRemote({
+      server,
+      token,
+      onMachines: (machines) => update({ machines }),
+      onThreads: setRemoteThreads,
+      onPanel: sendPanelMessage,
+      onAuthExpired: () => refreshMcpSession(server),
+    });
+    remote.setTarget(state.panel);
+    remote.setVisible(win?.isVisible() ?? false);
+  } catch (error) {
+    console.error("[t3] MCP session failed", error);
+  }
+}
+
+/** A fresh MCP token after T3 rejected this one: the other machines' poll resumes with it. */
+function refreshMcpSession(server: T3Server) {
+  void ensureMcpSession(server, true)
+    .then(() => connectRemote(server))
+    .catch((error) => console.error("[t3] MCP session refresh failed", error));
 }
 
 function sendPanelMessage(message: PanelMessage) {
@@ -306,8 +369,12 @@ function createWindow() {
   win.on("show", () => {
     state.unread = unreadWithout(state.panel);
     broadcast();
+    remote?.setVisible(true);
   });
-  win.on("hide", broadcast);
+  win.on("hide", () => {
+    broadcast();
+    remote?.setVisible(false);
+  });
   layout();
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);

@@ -26,6 +26,14 @@ export interface SidebarThread extends ThreadRef {
 
 export type T3Status = "connecting" | "offline" | "connected";
 
+/** A machine linked to this PC's T3: another machine's threads are read through it, never written. */
+export interface Machine {
+  environmentId: string;
+  label: string;
+  /** Whether it answered T3's last reachability probe. */
+  reachable: boolean;
+}
+
 export type PanelTarget = ThreadRef | null;
 
 /** "slide" fades the panel in out of the sidebar. */
@@ -33,6 +41,10 @@ export type PanelEntrance = "slide" | "instant";
 
 export interface OverlayState {
   t3: T3Status;
+  /** This PC's environment id, so the panel can tell a thread on another machine from its own. */
+  localEnvironmentId: string | null;
+  /** Linked machines. The ones that do not answer are a note in the logo's tooltip, with no dot. */
+  machines: Machine[];
   threads: SidebarThread[];
   working: SidebarThread[];
   /** Threads that stopped working since they were last opened in the panel. */

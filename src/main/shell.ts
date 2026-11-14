@@ -189,7 +189,7 @@ function waitsOnBackgroundWork(thread: ThreadShell): boolean {
   );
 }
 
-function projectIcon(project: ProjectShell | undefined, favicon: string | undefined): ProjectIcon {
+export function projectIcon(project: ProjectShell | undefined, favicon: string | undefined): ProjectIcon {
   const icon = project?.projectIcon;
   if (icon?.kind === "monogram" && icon.text) return { kind: "monogram", text: icon.text, color: icon.color ?? null };
   if (icon?.kind === "emoji" && icon.emoji) return { kind: "emoji", emoji: icon.emoji };
