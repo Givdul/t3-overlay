@@ -68,7 +68,7 @@ const state: OverlayState = {
   popover: null,
   side: "left",
   sidebarOffsetY: 0,
-  sidebarRows: persisted.sidebarRows,
+  sidebarListHeight: persisted.sidebarListHeight,
   opacity: persisted.opacity,
   locked: persisted.locked,
   settings: persisted.settings,
@@ -80,7 +80,7 @@ const guestPreload = join(import.meta.dirname, "../preload/guest.cjs");
 
 function save() {
   persisted.panelSize = state.panelSize;
-  persisted.sidebarRows = state.sidebarRows;
+  persisted.sidebarListHeight = state.sidebarListHeight;
   persisted.opacity = state.opacity;
   persisted.locked = state.locked;
   persisted.settings = state.settings;
@@ -406,12 +406,15 @@ let dragTimer: NodeJS.Timeout | null = null;
 /** The bottom the sidebar keeps while its top edge is dragged. */
 let dragBottom: number | null = null;
 
-function maxSidebarRows(area: Rectangle, top: number, bottom: number, kind: DragKind): number {
+/** While a sidebar edge moves, main sizes the sidebar and the renderer's height reports wait for the release. */
+let sidebarDragging = false;
+
+function maxSidebarListHeight(area: Rectangle, top: number, bottom: number, kind: DragKind): number {
   // The edge that stays put leaves only the work area on the other side of it to grow into.
   const room = kind === "sidebar-top" ? bottom - area.y : area.y + area.height - top;
   const chrome = sidebarHeight(state.threads.length, state.working.length, 0);
 
-  return Math.max(1, Math.floor((room - chrome) / SIDEBAR_SLOT_HEIGHT));
+  return Math.max(SIDEBAR_SLOT_HEIGHT, room - chrome);
 }
 
 function startDrag(kind: DragKind) {
@@ -419,7 +422,8 @@ function startDrag(kind: DragKind) {
   const cursor0 = screen.getCursorScreenPoint();
   const anchor0 = anchor();
   const size0 = { ...state.panelSize };
-  const rows0 = state.sidebarRows;
+  // Grow the list from what shows, so the edge moves with fewer threads than the list has height for.
+  const listHeight0 = Math.min(state.threads.length * SIDEBAR_SLOT_HEIGHT, state.sidebarListHeight);
   const side = state.side;
   const area = screen.getDisplayNearestPoint(anchor0).workArea;
   const bottom0 = Math.min(anchor0.y + extent.sidebarHeight, area.y + area.height);
@@ -427,6 +431,7 @@ function startDrag(kind: DragKind) {
 
   if (sidebarDrag) persisted.anchor = anchor0;
   dragBottom = kind === "sidebar-top" ? bottom0 : null;
+  sidebarDragging = sidebarDrag;
   let last = cursor0;
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = setInterval(() => {
@@ -448,16 +453,18 @@ function startDrag(kind: DragKind) {
         height: Math.max(PANEL_MIN.height, Math.min(size0.height + dy, area.height)),
       };
     } else {
-      const maxRows = maxSidebarRows(area, anchor0.y, bottom0, kind);
-      // Count rows from those on screen, so the first row of travel moves the edge with fewer threads than rows.
-      const delta = Math.round((kind === "sidebar-top" ? -dy : dy) / SIDEBAR_SLOT_HEIGHT);
-      const visible = Math.min(Math.max(Math.min(rows0, state.threads.length), 1), maxRows);
-      const rows = delta === 0 ? rows0 : visible + delta;
-      const next = Math.max(1, Math.min(rows, maxRows));
+      const max = maxSidebarListHeight(area, anchor0.y, bottom0, kind);
+      // The list follows the cursor by the pixel, from the height it showed when the drag began.
+      const listHeight = Math.max(SIDEBAR_SLOT_HEIGHT, Math.min(listHeight0 + (kind === "sidebar-top" ? -dy : dy), max));
 
-      if (next === state.sidebarRows) return;
+      if (listHeight === state.sidebarListHeight) return;
 
-      state.sidebarRows = next;
+      state.sidebarListHeight = listHeight;
+      // Main sizes the sidebar from its own height on every tick, so the fixed edge holds instead of following
+      // the renderer's report a round trip later.
+      extent.sidebarHeight = sidebarHeight(state.threads.length, state.working.length, listHeight);
+
+      if (kind === "sidebar-top") persisted.anchor = { ...anchor(), y: Math.round(bottom0 - extent.sidebarHeight) };
     }
 
     // A move re-renders only when the sidebar shifts inside the window, such as at a screen edge.
@@ -469,14 +476,16 @@ function endDrag() {
   if (dragTimer) clearInterval(dragTimer);
   dragTimer = null;
 
-  // The renderer's last height report can arrive after the release; pin the bottom by main's own count first.
-  if (dragBottom !== null) {
-    const height = sidebarHeight(state.threads.length, state.working.length, state.sidebarRows);
-    persisted.anchor = { ...anchor(), y: Math.round(dragBottom - height) };
-    const moved = layout();
+  // Main sized the sidebar while the edge moved, so settle that height and pin the bottom a top-edge drag kept.
+  if (sidebarDragging) {
+    const height = sidebarHeight(state.threads.length, state.working.length, state.sidebarListHeight);
+    extent.sidebarHeight = height;
+    sidebarDragging = false;
+
+    if (dragBottom !== null) persisted.anchor = { ...anchor(), y: Math.round(dragBottom - height) };
     dragBottom = null;
 
-    if (moved) broadcast();
+    if (layout()) broadcast();
   }
 
   save();
@@ -537,16 +546,14 @@ function handleHost<T>(channel: string, handler: () => T) {
 
 handleHost("overlay:init", () => ({ state }));
 
-onHost("overlay:extent", (_event, next: Partial<Extent>) => {
+onHost("overlay:extent", (_event, reported: Partial<Extent>) => {
+  // While a sidebar edge is dragged, main sizes the sidebar; a report that lags a tick would pull it back.
+  const next = sidebarDragging ? { ...reported, sidebarHeight: extent.sidebarHeight } : reported;
+
   // By value: the tooltip's box is an object, and every report of it is a new one.
   if (JSON.stringify({ ...extent, ...next }) === JSON.stringify(extent)) return;
 
   extent = { ...extent, ...next };
-
-  // A top-edge drag keeps the sidebar's bottom fixed, so its anchor follows the height the renderer reports.
-  if (dragBottom !== null && next.sidebarHeight !== undefined) {
-    persisted.anchor = { ...anchor(), y: Math.round(dragBottom - extent.sidebarHeight) };
-  }
 
   layout();
   broadcast();
