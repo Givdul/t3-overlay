@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -26,9 +26,11 @@ import {
 import type { PanelCommand, PanelMessage } from "../shared/panel";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureSession, readServer, type T3Server } from "./t3";
+import { ensureMcpSession, ensureSession, hasMcpGrant, readServer, revokeMcpGrant, saveMcpGrant, type RejectedMcpToken, type T3Server } from "./t3";
+import { grantRemoteControl, type GrantConsent } from "./mcpAuth";
 import { startThreadFeed, type ProjectWorkspace, type ThreadFeed } from "./threads";
 import { startPanel, type Panel } from "./panel";
+import { startRemote, type Remote } from "./remote";
 import { createTray, refreshTray } from "./tray";
 import { launchT3, openProjectInT3 } from "./launch";
 import { dispatchCommand } from "./rpc";
@@ -41,6 +43,11 @@ let win: BrowserWindow | null = null;
 let extent: Extent = { sidebarHeight: 160, popoverHeight: null, tooltip: null };
 let feed: ThreadFeed | null = null;
 let panel: Panel | null = null;
+let remote: Remote | null = null;
+
+/** This PC's threads from the shell stream, and the other machines' from /mcp. */
+let localThreads: SidebarThread[] = [];
+let remoteThreads: SidebarThread[] = [];
 
 /** This PC's T3 server while the overlay is connected to it. */
 let localServer: T3Server | null = null;
@@ -50,6 +57,8 @@ let workspaces: ProjectWorkspace[] = [];
 
 const state: OverlayState = {
   t3: "connecting",
+  localEnvironmentId: null,
+  machines: [],
   threads: [],
   working: [],
   unread: [],
@@ -57,6 +66,7 @@ const state: OverlayState = {
   panelEntrance: "slide",
   panelSize: persisted.panelSize,
   popover: null,
+  remoteControl: false,
   side: "left",
   sidebarOffsetY: 0,
   sidebarListHeight: persisted.sidebarListHeight,
@@ -160,6 +170,7 @@ function openPanel(target: PanelTarget, entrance: PanelEntrance = "slide") {
   save();
   update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
   panel?.setTarget(target);
+  remote?.setTarget(target);
 }
 
 /** A thread is read once the panel shows it. */
@@ -193,6 +204,20 @@ function nextUnread(threads: SidebarThread[]): ThreadRef[] {
   return unread;
 }
 
+/**
+ * The sidebar's list. This PC's rows arrive from the shell stream and the other machines' from the
+ * MCP poll; either can change first, and both are merged here.
+ */
+function setLocalThreads(threads: SidebarThread[]) {
+  localThreads = threads;
+  setThreads([...localThreads, ...remoteThreads]);
+}
+
+function setRemoteThreads(threads: SidebarThread[]) {
+  remoteThreads = threads;
+  setThreads([...localThreads, ...remoteThreads]);
+}
+
 function setThreads(threads: SidebarThread[]) {
   // A thread that was working a moment ago and is now completed just finished.
   const finished = threads.find((thread) => thread.state === "completed" && lastStates.get(threadKey(thread)) === "working");
@@ -219,14 +244,16 @@ async function connect() {
   localServer = server;
   if (server === null) {
     stopConnection();
-    update({ t3: "offline", threads: [], working: [] });
+    stopRemote();
+    update({ t3: "offline", threads: [], working: [], machines: [] });
     setTimeout(connect, 5000);
     return;
   }
   try {
     const token = await ensureSession(server);
-    update({ t3: "connected" });
+    update({ t3: "connected", localEnvironmentId: server.environmentId });
     startFeed(server, token);
+    void connectRemote(server);
   } catch (error) {
     console.error("[t3] connect failed", error);
     update({ t3: "offline" });
@@ -241,12 +268,18 @@ function stopConnection() {
   panel = null;
 }
 
+function stopRemote() {
+  remote?.stop();
+  remote = null;
+  remoteThreads = [];
+}
+
 function startFeed(server: T3Server, token: string) {
   stopConnection();
   feed = startThreadFeed({
     server,
     token,
-    onThreads: setThreads,
+    onThreads: setLocalThreads,
     onProjects: (projects) => {
       if (JSON.stringify(projects) === JSON.stringify(workspaces)) return;
 
@@ -255,7 +288,8 @@ function startFeed(server: T3Server, token: string) {
     onAuthExpired: () => refreshSession(server),
     onLost: () => {
       stopConnection();
-      update({ t3: "offline", threads: [], working: [] });
+      stopRemote();
+      update({ t3: "offline", threads: [], working: [], machines: [] });
       setTimeout(connect, 5000);
     },
   });
@@ -269,8 +303,148 @@ function startFeed(server: T3Server, token: string) {
   panel.setTarget(state.panel);
 }
 
+/** The other machines, read through this PC's MCP endpoint with the session made for it. */
+async function connectRemote(server: T3Server) {
+  try {
+    const token = await ensureMcpSession(server);
+    // Which token T3 would reject decides the fallback: the grant goes, the session is replaced.
+    const granted = hasMcpGrant();
+
+    // Another connect, or none, happened while the token was loading.
+    if (localServer !== server) return;
+
+    update({ remoteControl: granted });
+    stopRemote();
+    remote = startRemote({
+      server,
+      token,
+      onMachines: (machines) => update({ machines }),
+      onThreads: setRemoteThreads,
+      onPanel: sendPanelMessage,
+      onAuthExpired: () => refreshMcpSession(server, granted ? "grant" : "session"),
+    });
+    remote.setTarget(state.panel);
+    remote.setVisible(win?.isVisible() ?? false);
+  } catch (error) {
+    console.error("[t3] MCP session failed", error);
+  }
+}
+
+/** A token T3 rejected is replaced at most this often, so a server that rejects every token cannot mint one per poll. */
+const MCP_MINT_INTERVAL_MS = 5 * 60_000;
+
+let mcpMintedAt = 0;
+
+/**
+ * T3 rejected the token the feed was using. A rejected grant only falls back to the sealed session;
+ * a rejected session is replaced, at most once per interval. If the replacement is rejected too, the
+ * feed stops instead of minting again on the next poll.
+ */
+async function refreshMcpSession(server: T3Server, rejected: RejectedMcpToken) {
+  // The old feed would report the same rejection again while the replacement loads.
+  stopRemote();
+
+  if (rejected === "session") {
+    if (Date.now() - mcpMintedAt < MCP_MINT_INTERVAL_MS) {
+      console.error("[t3] T3 rejected a freshly minted MCP session; remote reads stay stopped");
+
+      return;
+    }
+
+    mcpMintedAt = Date.now();
+  }
+
+  try {
+    await ensureMcpSession(server, rejected);
+    await connectRemote(server);
+  } catch (error) {
+    console.error("[t3] MCP session refresh failed", error);
+  }
+}
+
 function sendPanelMessage(message: PanelMessage) {
   win?.webContents.send("overlay:panel", message);
+}
+
+// ---------------------------------------------------------------- remote control
+
+/**
+ * The tray's grant: T3's MCP OAuth flow, run only from that click. The user confirms what full access
+ * covers, including any managed-policy ceiling, and `/mcp` then uses the granted session until it
+ * expires, T3 rejects it, or the tray revokes it.
+ */
+async function grantRemote() {
+  const server = state.t3 === "connected" ? localServer : null;
+
+  if (server === null) return;
+
+  try {
+    const granted = await grantRemoteControl(server, await ensureSession(server), confirmRemoteControl);
+
+    if (granted === null) return;
+
+    await saveMcpGrant(server, granted);
+    update({ remoteControl: hasMcpGrant() });
+    await connectRemote(server);
+  } catch (error) {
+    console.error("[t3] granting remote control failed", error);
+    await dialog.showMessageBox({
+      type: "error",
+      message: "Remote control was not granted",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** The confirmation before the overlay asks for full access; no session is created unless it is answered yes. */
+function confirmRemoteControl(consent: GrantConsent): Promise<boolean> {
+  const ceiling = consent.runtimeModeCeiling;
+
+  return dialog
+    .showMessageBox({
+      type: "warning",
+      buttons: ["Grant full access", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      message: "Give the overlay full access on every linked machine?",
+      detail: [
+        "T3 Code on this PC can then send, stop, settle and answer on any thread on the machines linked to this PC, including threads that run at full access.",
+        "Full access also lets it change settings and act on source control on those machines.",
+        ceiling === undefined
+          ? null
+          : `A managed policy for ${ceiling.organization} limits this grant to ${ceiling.maxRuntimeMode}.`,
+        "The grant lasts 30 days. Revoke it from this menu at any time.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n\n"),
+    })
+    .then(({ response }) => response === 0);
+}
+
+/**
+ * Deletes the grant and revokes its session, then goes back to the minted session for `/mcp`. A revoke
+ * that fails is reported: the sealed grant is gone either way, so the overlay stops using it, but T3
+ * may still accept the session until it is revoked from the CLI.
+ */
+async function revokeRemote() {
+  try {
+    await revokeMcpGrant();
+  } catch (error) {
+    console.error("[t3] revoking remote control failed", error);
+    await dialog.showMessageBox({
+      type: "error",
+      message: "Remote control may still be granted",
+      detail: [
+        error instanceof Error ? error.message : String(error),
+        "The overlay has stopped using the grant, but T3 may still accept its session.",
+        "Run `t3 auth session list`, then `t3 auth session revoke <id>` for the mcp-client session labelled t3-overlay grant.",
+      ].join("\n\n"),
+    });
+  }
+
+  update({ remoteControl: hasMcpGrant() });
+
+  if (state.t3 === "connected" && localServer !== null) await connectRemote(localServer);
 }
 
 /** A fresh token after T3 rejected this one: the feed and the panel reconnect with it. */
@@ -306,8 +480,12 @@ function createWindow() {
   win.on("show", () => {
     state.unread = unreadWithout(state.panel);
     broadcast();
+    remote?.setVisible(true);
   });
-  win.on("hide", broadcast);
+  win.on("hide", () => {
+    broadcast();
+    remote?.setVisible(false);
+  });
   layout();
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -509,29 +687,48 @@ async function settle(server: T3Server, thread: ThreadRef) {
   }
 }
 
+/** The same two actions on another machine, through `/mcp`. */
+async function organizeRemote(thread: ThreadRef, action: "settle" | "snooze", until?: Date) {
+  try {
+    await remote?.organize(thread, action, until?.toISOString());
+  } catch (error) {
+    console.error(`[t3] remote ${action} failed`, error);
+  }
+}
+
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const server = state.t3 === "connected" ? localServer : null;
   const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
   // T3 refuses to snooze a thread that waits on the user.
   const waitsOnUser = listed?.state === "approval" || listed?.state === "input";
-  // The overlay's own connection reaches this PC's server only.
+  // This PC's threads go through its socket; another machine's through the MCP session, while its
+  // link answers. A thread that has no row yet is on neither, so its menu stays disabled.
   const onThisPc = server !== null && server.environmentId === thread.environmentId;
+
+  const onRemote =
+    !onThisPc && remote !== null && state.machines.some((machine) => machine.environmentId === thread.environmentId && machine.reachable);
+
+  const canAct = onThisPc || onRemote;
 
   Menu.buildFromTemplate([
     {
       label: "Settle",
-      enabled: onThisPc,
+      enabled: canAct,
       click: () => {
-        if (server !== null) void settle(server, thread);
+        if (onThisPc && server !== null) void settle(server, thread);
+        else void organizeRemote(thread, "settle");
       },
     },
     {
       // Menu tooltips only show on macOS, so a disabled item says why in its label.
-      label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
-      enabled: onThisPc && !waitsOnUser,
+      label: waitsOnUser ? "Snooze (reply first)" : "Snooze",
+      enabled: canAct && !waitsOnUser,
       submenu: snoozeChoices(new Date()).map((choice) => ({
         label: choice.label,
-        click: () => server && void snooze(server, thread, choice.until),
+        click: () => {
+          if (onThisPc && server !== null) void snooze(server, thread, choice.until);
+          else void organizeRemote(thread, "snooze", choice.until);
+        },
       })),
     },
   ]).popup({ window: win ?? undefined });
@@ -598,6 +795,15 @@ onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
 });
 
 handleHostWith("overlay:panel-command", (command: PanelCommand) => {
+  const target = state.panel;
+
+  // Another machine's thread is driven through `/mcp`, by its environmentId.
+  if (target !== null && localServer !== null && target.environmentId !== localServer.environmentId) {
+    if (remote === null) return { ok: false as const, error: "T3 is not connected" };
+
+    return remote.command(command);
+  }
+
   if (panel === null) return { ok: false as const, error: "T3 is not connected" };
 
   return panel.command(command);
@@ -612,6 +818,8 @@ const trayActions = {
     save();
   },
   launchT3: () => void launchT3(),
+  grantRemoteControl: () => void grantRemote(),
+  revokeRemoteControl: () => void revokeRemote(),
   editConfig: () => void shell.openPath(configPath()),
   quit: () => app.quit(),
 };

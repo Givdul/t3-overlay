@@ -1,4 +1,4 @@
-import { ArrowUp, PenLine } from "lucide-react";
+import { ArrowUp, ExternalLink, PenLine } from "lucide-react";
 import { useEffect, useImperativeHandle, useRef, useState, type RefObject } from "react";
 import type { PanelRun } from "../../../shared/panel";
 
@@ -24,6 +24,8 @@ interface ComposerProps {
   onBusyChange(busy: boolean): void;
   onUnfold(): void;
   onSent(): void;
+  /** Set for a thread on another machine, whose refusals only T3 can get past. */
+  onOpenInT3: (() => void) | null;
   handle: RefObject<ComposerHandle | null>;
 }
 
@@ -31,6 +33,7 @@ export function Composer(props: ComposerProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<{ error: string; grant: boolean } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const wantFocus = useRef(false);
   const textRef = useRef("");
@@ -79,6 +82,7 @@ export function Composer(props: ComposerProps) {
     if (sending || value === "") return;
     setSending(true);
     setError(null);
+    setRefusal(null);
 
     // T3 clears the box as it dispatches; a failure puts the draft back.
     const snapshot = textRef.current;
@@ -95,7 +99,9 @@ export function Composer(props: ComposerProps) {
     setSending(false);
 
     if (!reply.ok) {
-      setError(reply.error);
+      // A remote action T3 turned down is answered in T3, so the card carries T3's own message.
+      if (reply.refusal === true && props.onOpenInT3 !== null) setRefusal({ error: reply.error, grant: reply.grant === true });
+      else setError(reply.error);
       setDraftText(snapshot);
 
       return;
@@ -153,6 +159,27 @@ export function Composer(props: ComposerProps) {
         placeholder={props.running === null ? "Write a message" : "Queue a message"}
         className="mx-4 max-h-40 min-h-[22px] resize-none bg-transparent py-1.5 text-[length:var(--t3-font-size-prompt)] leading-relaxed text-t3-fg outline-none select-text placeholder:text-t3-muted"
       />
+
+      {refusal !== null && (
+        <div className="mx-4 mt-1 mb-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[var(--t3-code-background)] p-2">
+          <p className="text-[11px] leading-relaxed text-t3-muted">T3 Code did not take this from the overlay.</p>
+          <p className="mt-0.5 text-[12px] leading-relaxed whitespace-pre-wrap text-t3-fg">{refusal.error}</p>
+          {refusal.grant && (
+            <p className="mt-0.5 text-[11px] leading-relaxed text-t3-muted">
+              Grant remote control from the tray to allow this from the overlay.
+            </p>
+          )}
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => props.onOpenInT3?.()}
+            className="mt-1.5 flex items-center gap-1 rounded-md text-[11px] font-medium text-t3-muted transition-colors hover:text-t3-fg"
+          >
+            <ExternalLink size={11} />
+            Open in T3
+          </button>
+        </div>
+      )}
 
       {error !== null && (
         <div className="flex items-start gap-1.5 px-4 pt-1 pb-1 text-[11px] text-[var(--t3-error-foreground)]">

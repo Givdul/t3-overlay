@@ -1,4 +1,4 @@
-import { CircleAlert, CircleHelp, LoaderCircle } from "lucide-react";
+import { CircleAlert, CircleHelp, ExternalLink, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { PanelQuestion, PanelRuntimeRequest } from "../../../shared/panel";
 import type { PendingRequests } from "./model";
@@ -12,7 +12,14 @@ const card =
 const action =
   "flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] px-2.5 py-1 text-[12px] text-t3-fg hover:bg-t3-accent disabled:cursor-default disabled:opacity-40";
 
-export function ApprovalCard({ request }: { request: PendingRequests["approvals"][number] }) {
+export function ApprovalCard({
+  request,
+  openInT3,
+}: {
+  request: PendingRequests["approvals"][number];
+  /** Set on another machine, where `/mcp` can list an approval but not answer it. */
+  openInT3: (() => void) | null;
+}) {
   const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const live = request.responseCapability.type === "live";
@@ -39,7 +46,14 @@ export function ApprovalCard({ request }: { request: PendingRequests["approvals"
         <p className="mt-1 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--t3-foreground)]">{request.prompt}</p>
       )}
       {request.reason !== null && <p className="mt-1 text-[11px] text-t3-muted">{request.reason}</p>}
-      {live ? (
+      {openInT3 !== null ? (
+        <div className="mt-2 flex items-center gap-2">
+          <button type="button" className={action} onClick={openInT3}>
+            <ExternalLink size={11} />
+            Open in T3
+          </button>
+        </div>
+      ) : live ? (
         <div className="mt-2 flex items-center gap-2">
           <button type="button" disabled={busy !== null} className={action} onClick={() => void respond("accept")}>
             {busy === "accept" && <LoaderCircle size={11} className="animate-spin" />}
@@ -93,7 +107,7 @@ export function QuestionCard({ request }: { request: PendingRequests["questions"
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const live = request.responseCapability.type === "live" || request.responseCapability.type === "message";
+  const live = request.remote === true || request.responseCapability.type === "live" || request.responseCapability.type === "message";
 
   const answers = request.questions.flatMap<{ id: string; answer: string | string[] }>((question) => {
     const id = question.id ?? "";
