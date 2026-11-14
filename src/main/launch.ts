@@ -12,6 +12,20 @@ function findT3Executable(): string | null {
   return exe ? join(dir, exe) : null;
 }
 
+/** Opens a project's new-thread draft in the running T3 Code app, through its own CLI. */
+export function openProjectInT3(workspaceRoot: string) {
+  const cli = join(homedir(), ".t3", "bin", process.platform === "win32" ? "t3.cmd" : "t3");
+
+  // .cmd shims run through cmd.exe. The path is T3's own project root, quoted as one argument.
+  const [file, args] =
+    process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", `"${cli}" app "${workspaceRoot}"`]] : [cli, ["app", workspaceRoot]];
+
+  const child = spawn(file, args, { detached: true, stdio: "ignore", windowsHide: true });
+
+  child.on("error", (error) => console.error("[t3] could not open the project in T3", error));
+  child.unref();
+}
+
 export async function launchT3() {
   const exe = findT3Executable();
   if (exe === null) {

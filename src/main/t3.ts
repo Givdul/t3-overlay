@@ -3,9 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { app, safeStorage, session } from "electron";
-
-export const T3_PARTITION = "persist:t3";
+import { app, safeStorage } from "electron";
 
 const T3_HOME = join(homedir(), ".t3");
 
@@ -83,7 +81,6 @@ function mintToken(): Promise<string> {
 
 interface AuthSession {
   authenticated: boolean;
-  auth: { sessionCookieName: string };
 }
 
 async function authSession(server: T3Server, token: string): Promise<AuthSession> {
@@ -93,29 +90,11 @@ async function authSession(server: T3Server, token: string): Promise<AuthSession
   return (await response.json()) as AuthSession;
 }
 
-/** The server the session cookie was last installed for. It stays set while that server is down. */
-let cookieServer: URL | null = null;
-
-/**
- * Cookies ignore ports, so the session cookie also rides on requests to every other listener on the
- * T3 server's host.
- */
-export function sessionTarget(url: string): "server" | "other port" | "elsewhere" {
-  if (cookieServer === null || !URL.canParse(url)) return "elsewhere";
-
-  const target = new URL(url);
-
-  if (target.hostname !== cookieServer.hostname) return "elsewhere";
-
-  return target.port === cookieServer.port ? "server" : "other port";
-}
-
 let pendingSession: { key: string; token: Promise<string> } | null = null;
 
 /**
- * Returns a working bearer token and installs it as the session cookie of the T3 webview partition.
- * Concurrent calls for the same server and mint share one attempt, so a reconnect racing an expiry
- * mints one token, not two. Other calls run after it.
+ * Returns a working bearer token for the server. Concurrent calls for the same server and mint share
+ * one attempt, so a reconnect racing an expiry mints one token, not two. Other calls run after it.
  */
 export function ensureSession(server: T3Server, forceMint = false): Promise<string> {
   const key = `${server.origin} ${forceMint}`;
@@ -147,15 +126,6 @@ async function establishSession(server: T3Server, forceMint: boolean): Promise<s
   }
 
   knownToken = token;
-  await session.fromPartition(T3_PARTITION).cookies.set({
-    url: server.origin,
-    name: current.auth.sessionCookieName,
-    value: token,
-    httpOnly: true,
-    sameSite: "lax",
-    expirationDate: Date.now() / 1000 + 90 * 24 * 3600,
-  });
-  cookieServer = new URL(server.origin);
 
   return token;
 }
@@ -168,14 +138,5 @@ async function saveToken(token: string) {
     await writeFile(tokenPath(), await safeStorage.encryptStringAsync(token));
   } catch (error) {
     console.warn("[t3] keeping the session token in memory only", error);
-  }
-}
-
-/** Copies the desktop app's client settings (send shortcut, follow-up behavior, theme) into the webview. */
-export async function readDesktopClientSettings(): Promise<string | null> {
-  try {
-    return await readFile(join(T3_HOME, "userdata", "client-settings.json"), "utf8");
-  } catch {
-    return null;
   }
 }

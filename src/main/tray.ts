@@ -5,7 +5,6 @@ import type { OverlayState } from "../shared/types";
 export interface TrayActions {
   toggleVisible: () => void;
   setLocked: (locked: boolean) => void;
-  connectMachines: () => void;
   launchT3: () => void;
   editConfig: () => void;
   quit: () => void;
@@ -26,15 +25,14 @@ export function createTray(trayActions: TrayActions) {
 
 export function refreshTray(state: OverlayState, visible: boolean) {
   if (!tray || !actions) return;
-  const warning = state.hotkeyFailed.length > 0 || state.source === "local";
-  const key = JSON.stringify([visible, state.locked, state.t3, state.source, state.hotkeyFailed]);
+  const warning = state.hotkeyFailed.length > 0;
+  const key = JSON.stringify([visible, state.locked, state.t3, state.hotkeyFailed]);
   if (key === lastKey) return;
   lastKey = key;
 
   tray.setImage(icon(warning ? "tray-warning.png" : "tray.png"));
   const notes = [
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
-    state.source === "local" ? "Only this PC: the panel is not connected to other machines" : null,
   ].filter((note): note is string => note !== null);
   tray.setToolTip(["T3 overlay", ...notes].join("\n"));
 
@@ -46,7 +44,6 @@ export function refreshTray(state: OverlayState, visible: boolean) {
       { label: visible ? "Hide" : "Show", click: a.toggleVisible },
       { label: "Lock position", type: "checkbox", checked: state.locked, click: (item) => a.setLocked(item.checked) },
       { type: "separator" },
-      { label: "Connect machines", click: a.connectMachines, enabled: state.t3 === "connected" },
       { label: "Launch T3", click: a.launchT3, enabled: state.t3 === "offline" },
       { label: "Edit config", click: a.editConfig },
       { type: "separator" },

@@ -1,26 +1,30 @@
-import type { WebContents } from "electron";
-import type { SidebarThread, ThreadSource } from "../shared/types";
-import { startGuestFeed } from "./cdp";
-import { AuthExpiredError, openShellStream } from "./rpc";
-import { ShellModel, sortSidebar } from "./shell";
+import type { SidebarThread } from "../shared/types";
+import { AuthExpiredError, connect } from "./rpc";
+import { ShellModel, sortSidebar, type ShellItem } from "./shell";
 import type { T3Server } from "./t3";
 
 export interface ThreadFeed {
-  /** The panel's webview once it shows T3's own page, or null when it stops showing it. */
-  setGuest(contents: WebContents | null): void;
   stop(): void;
+}
+
+/** A project's checkout, as T3 knows it. */
+export interface ProjectWorkspace {
+  projectId: string;
+  workspaceRoot: string;
 }
 
 export interface FeedOptions {
   server: T3Server;
   token: string;
-  onThreads: (threads: SidebarThread[], source: ThreadSource) => void;
+  onThreads: (threads: SidebarThread[]) => void;
+  /** The shell's projects: main opens one in T3 when the panel's `+` asks for a new thread. */
+  onProjects: (projects: ProjectWorkspace[]) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
 
 /** Thread list for this PC only, from the local server's shell stream. */
-function startLocalFeed(options: FeedOptions, onThreads: (threads: SidebarThread[]) => void): { stop(): void } {
+export function startThreadFeed(options: FeedOptions): ThreadFeed {
   let stopStream: (() => void) | null = null;
   let stopped = false;
 
@@ -33,10 +37,15 @@ function startLocalFeed(options: FeedOptions, onThreads: (threads: SidebarThread
       };
 
       const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
+      const rpc = await connect<ShellItem, never>(options.server, options.token);
 
-      stopStream = await openShellStream(options.server, options.token, {
+      stopStream = () => rpc.close();
+      rpc.stream("orchestration.subscribeShell", {}, {
         onValue: (value) => {
-          if (!stopped && model.apply(value) && model.hasSnapshot) onThreads(sortSidebar(model.sidebar()));
+          if (stopped || !model.apply(value) || !model.hasSnapshot) return;
+
+          options.onThreads(sortSidebar(model.sidebar()));
+          options.onProjects(model.projectWorkspaces());
         },
         onClose: (reason) => {
           console.warn("[t3] shell stream closed:", reason);
@@ -59,48 +68,6 @@ function startLocalFeed(options: FeedOptions, onThreads: (threads: SidebarThread
     stop() {
       stopped = true;
       stopStream?.();
-    },
-  };
-}
-
-/**
- * Every machine the panel's T3 page is connected to, read from that page. Until it has loaded, or when it
- * knows no machine, this PC only. The local stream always runs: it is how the overlay notices T3 going away.
- */
-export function startThreadFeed(options: FeedOptions): ThreadFeed {
-  let localThreads: SidebarThread[] | null = null;
-  let guestThreads: SidebarThread[] | null = null;
-  let guest: { stop(): void } | null = null;
-
-  const emit = () => {
-    if (guestThreads) options.onThreads(guestThreads, "all-machines");
-    else if (localThreads) options.onThreads(localThreads, "local");
-  };
-
-  const local = startLocalFeed(options, (threads) => {
-    localThreads = threads;
-    if (!guestThreads) emit();
-  });
-
-  return {
-    setGuest(contents) {
-      guest?.stop();
-      guest = null;
-      guestThreads = null;
-      if (contents) {
-        guest = startGuestFeed({
-          contents,
-          onThreads: (threads) => {
-            guestThreads = threads;
-            emit();
-          },
-        });
-      }
-      emit();
-    },
-    stop() {
-      local.stop();
-      guest?.stop();
     },
   };
 }

@@ -17,12 +17,6 @@ export interface Persisted {
 
 export interface Config {
   hotkeys: { focus: string; toggle: string };
-  /**
-   * Where the chat panel loads T3's web UI from. The hosted app can sign into T3 Connect and reach
-   * every machine; T3 only allows that sign-in over HTTPS on its own domain. "local" uses this PC's
-   * T3 server, which reaches only this PC.
-   */
-  panelOrigin: string;
 }
 
 const DEFAULT_PERSISTED: Persisted = {
@@ -37,7 +31,6 @@ const DEFAULT_PERSISTED: Persisted = {
 
 const DEFAULT_CONFIG: Config = {
   hotkeys: { focus: "Control+Shift+Space", toggle: "Control+Shift+H" },
-  panelOrigin: "https://app.t3.codes",
 };
 
 export const statePath = () => join(app.getPath("userData"), "state.json");
@@ -75,18 +68,5 @@ export function loadConfig(): Config {
   if (!existsSync(configPath())) writeFileSync(configPath(), JSON.stringify(DEFAULT_CONFIG, null, 2));
   const config = readJson(configPath(), DEFAULT_CONFIG);
 
-  return {
-    hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys },
-    panelOrigin: panelOrigin(config.panelOrigin),
-  };
-}
-
-/** "local", or the origin of an HTTPS URL. Anything else falls back to the hosted app. */
-function panelOrigin(value: string): string {
-  if (value === "local") return value;
-
-  if (!URL.canParse(value)) return DEFAULT_CONFIG.panelOrigin;
-  const url = new URL(value);
-
-  return url.protocol === "https:" ? url.origin : DEFAULT_CONFIG.panelOrigin;
+  return { hotkeys: { ...DEFAULT_CONFIG.hotkeys, ...config.hotkeys } };
 }
