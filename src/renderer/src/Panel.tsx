@@ -75,15 +75,16 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const title = view?.thread.title || known?.title || "Thread";
   const contextLabel = [known?.projectName, known?.environmentLabel].filter(Boolean).join(" · ");
 
-  // A thread on another machine is read through this PC's T3 server: its history and status show
-  // here, and everything that acts on it waits in T3 (Open in T3) until it can be sent to.
+  // A thread on another machine is read through this PC's T3 server, and acted on through its `/mcp`
+  // endpoint. An approval has no `/mcp` call, so its card hands the thread to T3.
   const remote = target !== null && state.localEnvironmentId !== null && target.environmentId !== state.localEnvironmentId;
   const machine = remote && target !== null ? (state.machines.find((candidate) => candidate.environmentId === target.environmentId)?.label ?? null) : null;
+  const openInT3 = remote && target !== null ? () => window.overlay.openInT3(target) : null;
 
   const statusLabel =
     panel.status === "ended" ? "Disconnected" : panel.status === "connecting" ? "Connecting…" : running !== null ? "Working" : reply ? "Waiting for you" : "";
 
-  const canCompose = !remote && target !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
+  const canCompose = target !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
   const folded = canCompose && settings.compactComposer && !reply && !composerOpen && text === "" && !busy && !focused;
   const titleInCard = settings.titleInComposer && canCompose && !folded;
   const visible = target !== null;
@@ -172,7 +173,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           {/* The inner lane flips back to LTR, and its tail leaves room for the composer's overlap. */}
           <div style={{ direction: "ltr" }} className="px-3 pt-3">
             {view !== null ? (
-              <Timeline view={view} pending={pending} onLink={(url) => window.overlay.openLink(url)} />
+              <Timeline view={view} pending={pending} onLink={(url) => window.overlay.openLink(url)} onOpenInT3={openInT3} />
             ) : panel.status === "ended" ? (
               <PlaceholderCard
                 title="This thread is closed here"
@@ -220,6 +221,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
             composer.current?.focus();
           }}
           onSent={() => window.overlay.sent()}
+          onOpenInT3={openInT3}
           handle={composer}
         />
       )}

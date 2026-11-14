@@ -53,8 +53,8 @@ const mcpTokenPath = () => join(app.getPath("userData"), "t3-mcp-session.bin");
 const SESSION_ARGS = ["auth", "session", "issue", "--ttl", "90d", "--label", "t3-overlay", "--token-only"];
 
 /**
- * The `/mcp` session. `mcp-client` is the one subject T3's MCP endpoint accepts, and the only scope it
- * needs for this phase is reading: writes to another machine come later, with a wider scope.
+ * The `/mcp` session. `mcp-client` is the one subject T3's MCP endpoint accepts, and it needs both
+ * scopes: reading the other machines' threads, and acting on them.
  */
 const MCP_SESSION_ARGS = [
   "auth",
@@ -68,6 +68,8 @@ const MCP_SESSION_ARGS = [
   "mcp-client",
   "--scope",
   "orchestration:read",
+  "--scope",
+  "orchestration:operate",
   "--token-only",
 ];
 
@@ -87,18 +89,26 @@ async function loadToken(): Promise<string | null> {
   }
 }
 
-function mintToken(args: string[]): Promise<string> {
+function runT3(args: string[]): Promise<string> {
   const cli = join(T3_HOME, "bin", process.platform === "win32" ? "t3.cmd" : "t3");
   return new Promise((resolve, reject) => {
-    // .cmd shims run through cmd.exe. The arguments are fixed, so nothing is interpolated.
+    // .cmd shims run through cmd.exe. The arguments are fixed, and every session id is checked
+    // against /^[\w-]+$/ first, so the joined string carries no command.
     const [file, fileArgs] =
       process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", `"${cli}" ${args.join(" ")}`]] : [cli, args];
     execFile(file, fileArgs, { timeout: 60_000, windowsHide: true, windowsVerbatimArguments: true }, (error, stdout) => {
-      const token = stdout.trim().split(/\r?\n/).pop() ?? "";
-      if (error || token === "") reject(error ?? new Error("t3 auth session issue printed no token"));
-      else resolve(token);
+      if (error) reject(error);
+      else resolve(stdout);
     });
   });
+}
+
+async function mintToken(args: string[]): Promise<string> {
+  const token = (await runT3(args)).trim().split(/\r?\n/).pop() ?? "";
+
+  if (token === "") throw new Error("t3 auth session issue printed no token");
+
+  return token;
 }
 
 interface AuthSession {
@@ -163,13 +173,21 @@ async function saveToken(token: string) {
   }
 }
 
-/** The MCP session serves one environment: a token minted for another T3 belongs to another machine. */
+/**
+ * The MCP session serves one environment: a token minted for another T3 belongs to another machine.
+ * Where it came from decides whether it may act; only the token's owner knows its scopes, so the file
+ * records that this one holds both.
+ */
 interface McpSession {
   environmentId: string;
   token: string;
+  scopes: "read+operate";
 }
 
 let knownMcpSession: McpSession | null = null;
+
+/** Set when the sealed session predates remote actions, so the mint replaces and revokes it. */
+let staleMcpSession = false;
 
 async function loadMcpSession(server: T3Server): Promise<string | null> {
   if (knownMcpSession !== null) return knownMcpSession.environmentId === server.environmentId ? knownMcpSession.token : null;
@@ -179,11 +197,19 @@ async function loadMcpSession(server: T3Server): Promise<string | null> {
   // As with the shell's token, a corrupt file or one sealed by another keychain is replaced.
   try {
     // SAFETY: saveMcpSession writes this shape, sealed with safeStorage.
-    const stored = JSON.parse((await safeStorage.decryptStringAsync(await readFile(mcpTokenPath()))).result) as McpSession;
+    const stored = JSON.parse((await safeStorage.decryptStringAsync(await readFile(mcpTokenPath()))).result) as Partial<McpSession>;
 
-    if (stored.environmentId !== server.environmentId) return null;
+    if (stored.environmentId !== server.environmentId || stored.token === undefined) return null;
 
-    knownMcpSession = stored;
+    // A session sealed before actions existed is read-only. Its token still reads, but T3 will refuse
+    // every write with it, so this start mints one with both scopes and revokes the old session.
+    if (stored.scopes !== "read+operate") {
+      staleMcpSession = true;
+
+      return null;
+    }
+
+    knownMcpSession = { environmentId: server.environmentId, token: stored.token, scopes: "read+operate" };
 
     return stored.token;
   } catch {
@@ -194,10 +220,46 @@ async function loadMcpSession(server: T3Server): Promise<string | null> {
 async function saveMcpSession(environmentId: string, token: string) {
   if (!safeStorage.isEncryptionAvailable()) return;
 
+  const session: McpSession = { environmentId, token, scopes: "read+operate" };
+
   try {
-    await writeFile(mcpTokenPath(), await safeStorage.encryptStringAsync(JSON.stringify({ environmentId, token })));
+    await writeFile(mcpTokenPath(), await safeStorage.encryptStringAsync(JSON.stringify(session)));
   } catch (error) {
     console.warn("[t3] keeping the MCP session in memory only", error);
+  }
+}
+
+interface AuthSessionRecord {
+  sessionId: string;
+  subject: string;
+  scopes: string[];
+  client?: { label?: string };
+}
+
+/**
+ * The first P4 start replaces the read-only session with one that may act. Both carry the same label,
+ * and only one must remain, so the read-only ones are revoked rather than left valid for 90 days.
+ */
+async function revokeReadOnlyMcpSessions() {
+  try {
+    // SAFETY: `t3 auth session list --json` prints these records (binCli's session list command).
+    const sessions = JSON.parse(await runT3(["auth", "session", "list", "--json"])) as AuthSessionRecord[];
+
+    for (const session of sessions) {
+      if (session.subject !== "mcp-client" || session.client?.label !== "t3-overlay-remote") continue;
+
+      if (session.scopes.includes("orchestration:operate")) continue;
+
+      // .cmd shims run through cmd.exe, where this id would be a command: only an id T3 prints gets through.
+      if (!/^[\w-]+$/.test(session.sessionId)) {
+        throw new Error(`t3 auth session list printed an id the CLI cannot take: ${session.sessionId}`);
+      }
+
+      await runT3(["auth", "session", "revoke", session.sessionId]);
+    }
+  } catch (error) {
+    // The new session works; an old one that outlives it is not worth failing the connection over.
+    console.warn("[t3] revoking the read-only MCP session failed", error);
   }
 }
 
@@ -230,11 +292,16 @@ async function establishMcpSession(server: T3Server, forceMint: boolean): Promis
   let token = forceMint ? null : await loadMcpSession(server);
 
   if (token === null) {
+    const replacingReadOnly = staleMcpSession;
+
+    staleMcpSession = false;
     token = await mintToken(MCP_SESSION_ARGS);
     await saveMcpSession(server.environmentId, token);
+
+    if (replacingReadOnly) await revokeReadOnlyMcpSessions();
   }
 
-  knownMcpSession = { environmentId: server.environmentId, token };
+  knownMcpSession = { environmentId: server.environmentId, token, scopes: "read+operate" };
 
   return token;
 }

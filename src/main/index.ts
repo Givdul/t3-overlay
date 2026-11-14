@@ -576,29 +576,48 @@ async function settle(server: T3Server, thread: ThreadRef) {
   }
 }
 
+/** The same two actions on another machine, through `/mcp`. */
+async function organizeRemote(thread: ThreadRef, action: "settle" | "snooze", until?: Date) {
+  try {
+    await remote?.organize(thread, action, until?.toISOString());
+  } catch (error) {
+    console.error(`[t3] remote ${action} failed`, error);
+  }
+}
+
 onHost("overlay:thread-menu", (_event, thread: ThreadRef) => {
   const server = state.t3 === "connected" ? localServer : null;
   const listed = [...state.threads, ...state.working].find((candidate) => sameThread(thread, candidate));
   // T3 refuses to snooze a thread that waits on the user.
   const waitsOnUser = listed?.state === "approval" || listed?.state === "input";
-  // The overlay's own connection reaches this PC's server only.
+  // This PC's threads go through its socket; another machine's through the MCP session, while its
+  // link answers. A thread that has no row yet is on neither, so its menu stays disabled.
   const onThisPc = server !== null && server.environmentId === thread.environmentId;
+
+  const onRemote =
+    !onThisPc && remote !== null && state.machines.some((machine) => machine.environmentId === thread.environmentId && machine.reachable);
+
+  const canAct = onThisPc || onRemote;
 
   Menu.buildFromTemplate([
     {
       label: "Settle",
-      enabled: onThisPc,
+      enabled: canAct,
       click: () => {
-        if (server !== null) void settle(server, thread);
+        if (onThisPc && server !== null) void settle(server, thread);
+        else void organizeRemote(thread, "settle");
       },
     },
     {
       // Menu tooltips only show on macOS, so a disabled item says why in its label.
-      label: waitsOnUser ? "Snooze (reply first)" : onThisPc ? "Snooze" : "Snooze (this PC only)",
-      enabled: onThisPc && !waitsOnUser,
+      label: waitsOnUser ? "Snooze (reply first)" : "Snooze",
+      enabled: canAct && !waitsOnUser,
       submenu: snoozeChoices(new Date()).map((choice) => ({
         label: choice.label,
-        click: () => server && void snooze(server, thread, choice.until),
+        click: () => {
+          if (onThisPc && server !== null) void snooze(server, thread, choice.until);
+          else void organizeRemote(thread, "snooze", choice.until);
+        },
       })),
     },
   ]).popup({ window: win ?? undefined });
@@ -665,6 +684,15 @@ onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
 });
 
 handleHostWith("overlay:panel-command", (command: PanelCommand) => {
+  const target = state.panel;
+
+  // Another machine's thread is driven through `/mcp`, by its environmentId.
+  if (target !== null && localServer !== null && target.environmentId !== localServer.environmentId) {
+    if (remote === null) return { ok: false as const, error: "T3 is not connected" };
+
+    return remote.command(command);
+  }
+
   if (panel === null) return { ok: false as const, error: "T3 is not connected" };
 
   return panel.command(command);

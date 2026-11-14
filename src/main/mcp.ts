@@ -9,14 +9,19 @@ const PROTOCOL_VERSION = "2025-06-18";
 /** A T3 that stops answering must not stall the poller that owns this client. */
 const REQUEST_TIMEOUT_MS = 20_000;
 
-/** The arguments the read-only tools take: ids, page sizes and flags. */
-export type ToolArguments = Record<string, string | number | boolean>;
+/** One tool argument or `answers` record; the tools take ids, page sizes, flags and the answers map. */
+export type ToolArguments = Record<string, string | number | boolean | Record<string, string | string[]>>;
 
 /** T3 rejected the session, so the token it was opened with has to be minted again. */
 export class McpAuthExpiredError extends Error {}
 
 /** T3's tool failed: a machine that does not answer, a thread that is gone, links turned off. */
-export class McpToolError extends Error {}
+export class McpToolError extends Error {
+  /** T3's own message, without the tool's name in front. */
+  constructor(message: string, readonly detail = message, readonly code?: string) {
+    super(message);
+  }
+}
 
 interface InitializeRequest {
   jsonrpc: "2.0";
@@ -144,7 +149,7 @@ export function openMcp(server: T3Server, token: string): Mcp {
 
       const reply = replyFor(await replies(response), id);
 
-      if (reply.error !== undefined) throw new McpToolError(`${name}: ${reply.error.message ?? "request failed"}`);
+      if (reply.error !== undefined) throw new McpToolError(`${name}: ${reply.error.message ?? "request failed"}`, reply.error.message ?? "request failed");
 
       return toolOutput<T>(name, reply.result);
     }
@@ -193,16 +198,36 @@ function replyFor(replies: Reply[], id: number): Reply {
 }
 
 function toolOutput<T>(name: string, result: ToolResult | undefined): T {
-  if (result?.isError === true) throw new McpToolError(`${name}: ${failureText(result)}`);
+  if (result?.isError === true) {
+    const { detail, code } = failureOf(result);
+
+    throw new McpToolError(`${name}: ${detail}`, detail, code);
+  }
 
   // SAFETY: T names the tool's own result shape, which main/remote.ts types from the fields T3's
   // contract declares; T3 puts exactly that shape in `structuredContent` when a tool succeeds.
   return result?.structuredContent as T;
 }
 
-/** T3 returns a declared failure as `isError`, with its message as the only content block. */
-function failureText(result: ToolResult): string {
-  const text = result.content?.find((block) => block.type === "text")?.text;
+interface ToolFailure {
+  detail: string;
+  code?: string;
+}
 
-  return text === undefined || text === "" ? "the tool failed" : text.slice(0, 300);
+/** A forwarded failure arrives as T3's encoded OrchestratorMcpFailure; a local one is its message. */
+function failureOf(result: ToolResult): ToolFailure {
+  const text = result.content?.find((block) => block.type === "text")?.text ?? "";
+
+  if (text === "") return { detail: "the tool failed" };
+
+  try {
+    // SAFETY: a tool failure's text is either plain or this object, whose fields are checked below.
+    const encoded = JSON.parse(text) as { code?: string; message?: string };
+
+    if (encoded.message !== undefined) return { detail: encoded.message, code: encoded.code };
+  } catch {
+    // A local failure is already the message a person should read.
+  }
+
+  return { detail: text.slice(0, 300) };
 }

@@ -26,7 +26,7 @@ export interface SidebarThread extends ThreadRef {
 
 export type T3Status = "connecting" | "offline" | "connected";
 
-/** A machine linked to this PC's T3: another machine's threads are read through it, never written. */
+/** A machine linked to this PC's T3: another machine's threads are reached through it, by `/mcp`. */
 export interface Machine {
   environmentId: string;
   label: string;

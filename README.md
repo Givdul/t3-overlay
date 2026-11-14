@@ -32,10 +32,16 @@ the text outline settings all apply to it.
 ## Other machines
 
 The sidebar also lists the threads of the machines this PC's T3 Code is linked to. Opening one shows
-its history, the machine it is on, and **Open in T3**. Those threads are read-only for now: send,
-stop, approvals, settle and snooze stay in T3 Code.
+its history, the machine it is on, and **Open in T3**. The composer sends to it (Enter queues behind
+a running turn), Stop interrupts it, questions are answered in their card, and its row menu settles
+and snoozes it.
 
-T3 Code reaches another machine over a peer link, and the overlay reads it through this PC's server.
+An approval, and anything else T3 will not take over the link, becomes a card with **Open in T3**:
+that opens the same thread in T3 Code, which alone can answer it. T3 also refuses to act on a thread
+that runs above the link's access — a full-access thread, until remote control is granted — and the
+same card carries T3's own message. The composer keeps the message so it can be sent there.
+
+T3 Code reaches another machine over a peer link, and the overlay acts through this PC's server.
 Both are needed:
 
 - a link on this PC: `t3 environment link` (T3 Code's Machines settings do the same),
@@ -53,8 +59,6 @@ The panel is a thin client, not T3's page. Some actions are only in T3 Code; the
 - `/` slash commands and `@` file mentions,
 - attachments and pasted images,
 - dictation.
-
-A thread on another machine has its history and **Open in T3**, and nothing that writes to it.
 
 ## How it connects
 

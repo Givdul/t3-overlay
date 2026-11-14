@@ -24,6 +24,8 @@ export interface PanelRuntimeRequest {
   status: string;
   /** Only a "live" capability can be answered from another client. */
   responseCapability: { type: string };
+  /** A request read from another machine: questions go through /mcp, approvals only through T3. */
+  remote?: true;
 }
 
 export interface PanelTodoStep {
@@ -174,6 +176,13 @@ export type PanelCommand =
   | { type: "answer"; requestId: string; answers: Record<string, string | string[]> }
   | { type: "turnItem"; itemId: string };
 
-export type PanelReply = { ok: true } | { ok: false; error: string };
+/** `refusal` is T3 turning the action down, which only T3 itself can finish. */
+export interface PanelFailure {
+  ok: false;
+  error: string;
+  refusal?: true;
+}
 
-export type PanelItemReply = { ok: true; item: PanelItem } | { ok: false; error: string };
+export type PanelReply = { ok: true } | PanelFailure;
+
+export type PanelItemReply = { ok: true; item: PanelItem } | PanelFailure;

@@ -1,13 +1,27 @@
-import type { PanelItem, PanelItemRef, PanelMessage, PanelRow, PanelRun, PanelThread, PanelView } from "../shared/panel";
+import type {
+  PanelCommand,
+  PanelItem,
+  PanelItemRef,
+  PanelItemReply,
+  PanelMessage,
+  PanelQuestion,
+  PanelReply,
+  PanelRow,
+  PanelRun,
+  PanelRuntimeRequest,
+  PanelThread,
+  PanelView,
+} from "../shared/panel";
 import type { Machine, SidebarThread, ThreadRef, ThreadState } from "../shared/types";
-import { McpAuthExpiredError, openMcp, type ToolArguments } from "./mcp";
+import { McpAuthExpiredError, McpToolError, openMcp, type ToolArguments } from "./mcp";
 import { trimItem } from "./panel";
 import { projectIcon, sortSidebar } from "./shell";
 import type { T3Server } from "./t3";
 
-// The user's other machines, read through this PC's T3 server: T3 reaches a linked machine over its
-// peer link, and the overlay reaches T3's /mcp endpoint with the read-only session. Everything here
-// is a read: a remote thread's history, its list row and its state.
+// The user's other machines, reached through this PC's T3 server: T3 reaches a linked machine over its
+// peer link, and the overlay reaches T3's /mcp endpoint with the session made for it. Reads are a remote
+// thread's history, its list row and its state; writes are the actions /mcp can take, routed by
+// environmentId. An approval has no /mcp call, so its card hands the thread to T3.
 //
 // Wire types below are the slices of the tools' results this client reads
 // (packages/contracts/src/orchestratorMcp.ts, project.ts). Only the fields the sidebar and the panel
@@ -84,6 +98,25 @@ interface WireHistory {
   hasMore: boolean;
 }
 
+interface WirePendingList {
+  requestIds: string[];
+}
+
+interface WireQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: { label: string; description: string; value?: string }[];
+  multiSelect?: boolean;
+  allowCustomAnswer?: boolean;
+  initialAnswer?: string;
+}
+
+interface WirePendingRead {
+  requestId: string;
+  questions: WireQuestion[];
+}
+
 /** T3 has no push for another machine: its lists and the open thread are read on a timer. */
 const IDLE_MS = 20_000;
 
@@ -106,7 +139,7 @@ const WORKING = new Set(["preparing", "queued", "starting", "running", "waiting"
 
 export interface RemoteOptions {
   server: T3Server;
-  /** The read-only MCP session this machine minted for `/mcp`; it reaches no other URL. */
+  /** The MCP session this machine minted for `/mcp`; it reaches no other URL. */
   token: string;
   /** Every linked machine, reachable or not, for the logo tooltip's note. */
   onMachines: (machines: Machine[]) => void;
@@ -122,6 +155,10 @@ export interface Remote {
   setTarget(target: ThreadRef | null): void;
   /** Polling pauses while the overlay is hidden, and resumes when it shows. */
   setVisible(visible: boolean): void;
+  /** A composer or request-card action on the open remote thread, through `/mcp`. */
+  command(command: PanelCommand): Promise<PanelReply | PanelItemReply>;
+  /** Settle or snooze a remote thread from its sidebar menu. */
+  organize(thread: ThreadRef, action: "settle" | "snooze", snoozedUntil?: string): Promise<void>;
   stop(): void;
 }
 
@@ -137,6 +174,10 @@ interface OpenThread {
   loaded: boolean;
   activeRunId: string | null;
   pendingRequestCount: number;
+  /** The questions `t3_pending_request` lists for this thread, in its order. */
+  questions: WirePendingRead[];
+  /** Whether the thread also waits on an approval, which no `/mcp` call can answer. */
+  approval: boolean;
 }
 
 export function startRemote(options: RemoteOptions): Remote {
@@ -281,9 +322,11 @@ export function startRemote(options: RemoteOptions): Remote {
 
   /** A remote thread's state, from its run status and, for the open one, its pending requests. */
   function stateOf(thread: WireThread): ThreadState {
-    // A read says a request is pending, not what kind it is. A thread that waits on the user gets
-    // the attention badge; which one is only P4's pending-request read away.
-    if (open !== null && open.target.threadId === thread.threadId && open.pendingRequestCount > 0) return "approval";
+    // Which request is waiting is only known for the open thread: its pending read tells a question
+    // from an approval, while a closed one shows the attention badge without the distinction.
+    if (open !== null && open.target.threadId === thread.threadId && open.pendingRequestCount > 0) {
+      return open.approval ? "approval" : "input";
+    }
 
     return runState(thread.status);
   }
@@ -311,6 +354,9 @@ export function startRemote(options: RemoteOptions): Remote {
     try {
       if (current.loaded) await refreshTail(current);
       else await loadPages(current);
+
+      if (open !== current) return false;
+      await readPending(current);
 
       if (open !== current) return false;
 
@@ -348,6 +394,45 @@ export function startRemote(options: RemoteOptions): Remote {
     if (afterPosition !== null) args.afterPosition = afterPosition;
 
     return mcp.callTool<WireHistory>("t3_thread_read", args);
+  }
+
+  /**
+   * T3 lists only questions, never approvals, so a count above the listed questions is an approval.
+   * A listed question can be answered between the list and the read; that one is skipped.
+   */
+  async function readPending(current: OpenThread) {
+    const listed =
+      current.pendingRequestCount > 0
+        ? await mcp.callTool<WirePendingList>("t3_pending_request", {
+            environmentId: current.target.environmentId,
+            threadId: current.target.threadId,
+            action: "list",
+          })
+        : { requestIds: [] };
+
+    const questions: WirePendingRead[] = [];
+
+    for (const requestId of listed.requestIds) {
+      try {
+        questions.push(
+          await mcp.callTool<WirePendingRead>("t3_pending_request", {
+            environmentId: current.target.environmentId,
+            threadId: current.target.threadId,
+            action: "read",
+            requestId,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof McpAuthExpiredError) throw error;
+
+        console.warn(`[remote] reading request ${requestId} failed`, error);
+      }
+    }
+
+    if (open !== current) return;
+
+    current.questions = questions;
+    current.approval = current.pendingRequestCount > listed.requestIds.length;
   }
 
   /** The first read pages from the start, so the panel shows the thread's whole history. */
@@ -404,6 +489,100 @@ export function startRemote(options: RemoteOptions): Remote {
     options.onThreads(next);
   }
 
+  function refuse(reason: string): PanelReply {
+    return { ok: false, error: reason };
+  }
+
+  /** A composer or request-card action on the open remote thread. T3's refusal keeps its own message. */
+  async function command(next: PanelCommand): Promise<PanelReply | PanelItemReply> {
+    const current = open;
+
+    if (current === null) return refuse("No thread is open");
+    const { environmentId, threadId } = current.target;
+
+    try {
+      switch (next.type) {
+        case "send": {
+          const text = next.text.trim();
+
+          if (text === "") return refuse("Write a message first");
+
+          // T3's own rule: `auto` starts an idle thread, `queue` always waits behind the active run.
+          await mcp.callTool("t3_thread_send", {
+            environmentId,
+            threadId,
+            message: text,
+            mode: next.queue ? "queue" : "auto",
+          });
+          schedule(0);
+
+          return { ok: true };
+        }
+
+        case "stop":
+          await mcp.callTool("t3_thread_interrupt", { environmentId, threadId, runId: next.runId });
+          schedule(0);
+
+          return { ok: true };
+        case "answer":
+          await mcp.callTool("t3_pending_request", {
+            environmentId,
+            threadId,
+            action: "respond",
+            requestId: next.requestId,
+            answers: next.answers,
+          });
+          schedule(0);
+
+          return { ok: true };
+        case "respond":
+          return refuse("Approve this in T3 Code");
+        case "turnItem": {
+          // The expanded row's full text, as the local panel fetches it from `getTurnItem`.
+          const result = await mcp.callTool<WireHistory>("t3_thread_read", {
+            environmentId,
+            threadId,
+            itemId: next.itemId,
+            textOffset: 0,
+            limit: 1,
+            runLimit: 1,
+            maxCharsPerItem: MAX_CHARS,
+          });
+
+          const item = result.items.flatMap((raw) => rowOf(raw) ?? []).find((row) => row.item.id === next.itemId)?.item;
+
+          return item === undefined ? refuse("T3 has no such turn item") : { ok: true, item };
+        }
+      }
+    } catch (error) {
+      if (error instanceof McpAuthExpiredError) {
+        if (!stopped) options.onAuthExpired();
+
+        return refuse("This PC's T3 no longer accepts the remote session");
+      }
+
+      console.warn(`[remote] ${next.type} on ${threadId} failed`, error);
+
+      if (error instanceof McpToolError) {
+        const refusal = error.code === "runtime_mode_escalation_denied" || error.code === "capability_denied";
+
+        return refusal ? { ok: false, error: error.detail, refusal: true } : refuse(error.detail);
+      }
+
+      return refuse(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function organize(thread: ThreadRef, action: "settle" | "snooze", snoozedUntil?: string) {
+    const args: ToolArguments = { environmentId: thread.environmentId, threadId: thread.threadId, action };
+
+    if (snoozedUntil !== undefined) args.snoozedUntil = snoozedUntil;
+
+    await mcp.callTool("t3_thread_organize", args);
+    // The row leaves, or the snooze hides it, on the next list read.
+    schedule(0);
+  }
+
   function setTarget(target: ThreadRef | null) {
     const next = target !== null && target.environmentId !== options.server.environmentId ? target : null;
 
@@ -422,6 +601,8 @@ export function startRemote(options: RemoteOptions): Remote {
             loaded: false,
             activeRunId: null,
             pendingRequestCount: 0,
+            questions: [],
+            approval: false,
           };
 
     if (next === null) {
@@ -456,7 +637,7 @@ export function startRemote(options: RemoteOptions): Remote {
 
   schedule(0);
 
-  return { setTarget, setVisible, stop };
+  return { setTarget, setVisible, command, organize, stop };
 }
 
 function sameTarget(left: ThreadRef | null, right: ThreadRef | null): boolean {
@@ -496,15 +677,93 @@ function rowOf(raw: WireItem): PanelRow | null {
 }
 
 function viewOf(current: OpenThread): PanelView {
+  // A thread read carries no attempts: a remote thread shows no subagent rows.
+  const rows = [...current.rows, ...rowsOfPending(current)];
+
   return {
     thread: current.thread,
     runs: current.runs,
-    // A thread read carries neither attempts nor runtime requests: a remote thread shows no cards.
     attempts: [],
-    runtimeRequests: [],
-    rows: current.rows,
-    items: current.rows.map((row) => refOf(row.item)),
+    runtimeRequests: requestsOfPending(current),
+    rows,
+    items: rows.map((row) => refOf(row.item)),
     queued: [],
+  };
+}
+
+const approvalRequestId = (current: OpenThread) => `pending-approval:${current.target.threadId}`;
+
+/** The requests `/mcp` lists are questions; a count above them is an approval T3 alone can answer. */
+function requestsOfPending(current: OpenThread): PanelRuntimeRequest[] {
+  const requests: PanelRuntimeRequest[] = current.questions.map((read) => ({
+    id: read.requestId,
+    kind: "user_input",
+    status: "pending",
+    responseCapability: { type: "" },
+    remote: true,
+  }));
+
+  if (current.approval) {
+    requests.push({
+      id: approvalRequestId(current),
+      kind: "",
+      status: "pending",
+      responseCapability: { type: "" },
+      remote: true,
+    });
+  }
+
+  return requests;
+}
+
+/** The cards go after the last row read; T3's own timeline draws them where the request happened. */
+function rowsOfPending(current: OpenThread): PanelRow[] {
+  let position = Math.max(current.lastPosition, ...current.rows.map((row) => row.position), -1) + 1;
+  const rows: PanelRow[] = [];
+
+  for (const read of current.questions) {
+    const id = `pending:${read.requestId}`;
+
+    rows.push({
+      position,
+      sourceItemId: id,
+      item: {
+        id,
+        type: "user_input_request",
+        runId: null,
+        nodeId: null,
+        ordinal: position,
+        status: "pending",
+        requestId: read.requestId,
+        questions: read.questions.map(questionOf),
+      },
+    });
+    position += 1;
+  }
+
+  if (current.approval) {
+    const requestId = approvalRequestId(current);
+    const id = `pending:${requestId}`;
+
+    rows.push({
+      position,
+      sourceItemId: id,
+      item: { id, type: "approval_request", runId: null, nodeId: null, ordinal: position, status: "pending", requestId },
+    });
+  }
+
+  return rows;
+}
+
+function questionOf(raw: WireQuestion): PanelQuestion {
+  return {
+    id: raw.id,
+    question: raw.question,
+    header: raw.header,
+    options: raw.options.map((option) => ({ label: option.label, description: option.description, value: option.value })),
+    multiSelect: raw.multiSelect,
+    allowCustomAnswer: raw.allowCustomAnswer,
+    initialAnswer: raw.initialAnswer,
   };
 }
 
