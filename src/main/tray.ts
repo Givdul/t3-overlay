@@ -6,9 +6,9 @@ export interface TrayActions {
   toggleVisible: () => void;
   setLocked: (locked: boolean) => void;
   launchT3: () => void;
-  /** Runs T3's MCP OAuth flow for a full-access session; only ever from this menu's click. */
-  grantRemoteControl: () => void;
-  revokeRemoteControl: () => void;
+  /** Pairs with the machine whose pairing link is on the clipboard, after the user confirms which machine it is. */
+  pairMachine: () => void;
+  forgetMachine: (environmentId: string) => void;
   editConfig: () => void;
   quit: () => void;
 }
@@ -29,7 +29,8 @@ export function createTray(trayActions: TrayActions) {
 export function refreshTray(state: OverlayState, visible: boolean) {
   if (!tray || !actions) return;
   const warning = state.hotkeyFailed.length > 0;
-  const key = JSON.stringify([visible, state.locked, state.t3, state.remoteControl, state.hotkeyFailed]);
+  const paired = state.machines.filter((machine) => !machine.local);
+  const key = JSON.stringify([visible, state.locked, state.t3, paired, state.hotkeyFailed]);
   if (key === lastKey) return;
   lastKey = key;
 
@@ -48,9 +49,8 @@ export function refreshTray(state: OverlayState, visible: boolean) {
       { label: "Lock position", type: "checkbox", checked: state.locked, click: (item) => a.setLocked(item.checked) },
       { type: "separator" },
       { label: "Launch T3", click: a.launchT3, enabled: state.t3 === "offline" },
-      ...(state.remoteControl
-        ? [{ label: "Revoke remote control", click: a.revokeRemoteControl }]
-        : [{ label: "Grant remote control…", click: a.grantRemoteControl, enabled: state.t3 === "connected" }]),
+      { label: "Pair a machine from the clipboard…", click: a.pairMachine },
+      ...paired.map((machine) => ({ label: `Forget ${machine.label}…`, click: () => a.forgetMachine(machine.environmentId) })),
       { label: "Edit config", click: a.editConfig },
       { type: "separator" },
       { label: "Quit", click: a.quit },

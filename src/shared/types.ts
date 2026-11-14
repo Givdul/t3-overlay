@@ -1,3 +1,5 @@
+import type { ModelChoice } from "./compose";
+
 export type ThreadState = "working" | "approval" | "input" | "completed" | "failed" | "idle";
 
 export interface ThreadRef {
@@ -26,32 +28,41 @@ export interface SidebarThread extends ThreadRef {
 
 export type T3Status = "connecting" | "offline" | "connected";
 
-/** A machine linked to this PC's T3: another machine's threads are reached through it, by `/mcp`. */
+/** "expired": T3 there no longer takes the paired session, so it has to be paired again. */
+export type MachineStatus = "connecting" | "connected" | "offline" | "expired";
+
+/** A T3 server the overlay is a client of: this PC's, or one paired from a pairing link. */
 export interface Machine {
   environmentId: string;
   label: string;
-  /** Whether it answered T3's last reachability probe. */
-  reachable: boolean;
+  status: MachineStatus;
+  /** This PC's own server, which the overlay finds and signs in to by itself. */
+  local: boolean;
 }
 
-export type PanelTarget = ThreadRef | null;
+/** "new" is the new-thread composer. */
+export type PanelTarget = ThreadRef | "new" | null;
+
+/** Where the last new thread started. The composer opens on that machine and project, with that model. */
+export interface LastLaunch {
+  environmentId: string;
+  projectId: string;
+  model: ModelChoice;
+}
 
 /** "slide" fades the panel in out of the sidebar. */
 export type PanelEntrance = "slide" | "instant";
 
 export interface OverlayState {
   t3: T3Status;
-  /** This PC's environment id, so the panel can tell a thread on another machine from its own. */
-  localEnvironmentId: string | null;
-  /** Linked machines. The ones that do not answer are a note in the logo's tooltip, with no dot. */
+  /** Every machine the overlay is a client of. One that is not connected is a note in the logo's tooltip. */
   machines: Machine[];
   threads: SidebarThread[];
   working: SidebarThread[];
   /** Threads that stopped working since they were last opened in the panel. */
   unread: ThreadRef[];
-  /** Whether a remote-control grant is in hand: the tray offers to grant one or to revoke it. */
-  remoteControl: boolean;
-  panel: PanelTarget | null;
+  lastLaunch: LastLaunch | null;
+  panel: PanelTarget;
   /** How the panel last opened. The hotkey opens it at once, straight into typing. */
   panelEntrance: PanelEntrance;
   panelSize: { width: number; height: number };

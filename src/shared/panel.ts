@@ -1,3 +1,5 @@
+import type { ComposeAttachment } from "./compose";
+
 // The panel's IPC contract. Views are loose on purpose, like main/shell.ts: only the fields the panel
 // reads are typed, so a T3 nightly's new field never breaks decoding.
 
@@ -24,8 +26,6 @@ export interface PanelRuntimeRequest {
   status: string;
   /** Only a "live" capability can be answered from another client. */
   responseCapability: { type: string };
-  /** A request read from another machine: questions go through /mcp, approvals only through T3. */
-  remote?: true;
 }
 
 export interface PanelTodoStep {
@@ -169,20 +169,17 @@ export type PanelMessage =
   | { kind: "event"; threadId: string; event: PanelEvent };
 
 export type PanelCommand =
-  | { type: "send"; text: string; queue: boolean }
+  /** `freshContext` is `/clear`: the turn starts without the thread's earlier context. */
+  | { type: "send"; text: string; queue: boolean; attachments: ComposeAttachment[]; freshContext: boolean }
   /** `runId` comes from the panel's own run list, which folds the stream's events in. */
   | { type: "stop"; runId: string }
   | { type: "respond"; requestId: string; decision: "accept" | "decline" }
   | { type: "answer"; requestId: string; answers: Record<string, string | string[]> }
   | { type: "turnItem"; itemId: string };
 
-/** `refusal` is T3 turning the action down, which only T3 itself can finish. */
 export interface PanelFailure {
   ok: false;
   error: string;
-  refusal?: true;
-  /** T3 refused because the session's access is below the thread's: granting remote control lifts it. */
-  grant?: true;
 }
 
 export type PanelReply = { ok: true } | PanelFailure;

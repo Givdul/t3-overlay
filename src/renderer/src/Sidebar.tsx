@@ -172,9 +172,11 @@ export function Sidebar({ state }: { state: OverlayState }) {
     state.hotkeyFailed.length > 0 ? `Hotkey taken by another app: ${state.hotkeyFailed.join(", ")}` : null,
   ].filter((warning) => warning !== null);
 
-  // A machine that does not answer has no row to explain itself, and it is not this PC's trouble:
-  // the note says so in the tooltip, and the dot stays for what is wrong here.
-  const machineNotes = state.machines.filter((machine) => !machine.reachable).map((machine) => `${machine.label} is unreachable`);
+  // A paired machine that is away has no row to explain itself, and it is not this PC's trouble: the note
+  // says so in the tooltip, and the dot stays for what is wrong here.
+  const machineNotes = state.machines
+    .filter((machine) => !machine.local && (machine.status === "offline" || machine.status === "expired"))
+    .map((machine) => (machine.status === "expired" ? `${machine.label} needs pairing again` : `${machine.label} does not answer`));
 
   const tooltip = useTooltip();
 
@@ -187,7 +189,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
           notes: [...warnings, ...machineNotes].map((text) => ({ text, color: "text-amber-300" })),
         };
       case "new":
-        return { title: "New thread in T3" };
+        return { title: "New thread" };
       case "working":
         return { title: `${state.working.length} working` };
     }
@@ -224,11 +226,11 @@ export function Sidebar({ state }: { state: OverlayState }) {
 
           <button
             type="button"
-            className={`${button} ${pressable} my-1.5`}
-            aria-label="New thread in T3"
+            className={`${button} ${pressable} my-1.5 ${state.panel === "new" ? "bg-t3-accent ring-1 ring-t3-fg/30" : ""}`}
+            aria-label="New thread"
             {...tooltip.anchor("new")}
-            disabled={state.t3 !== "connected"}
-            onClick={() => window.overlay.openInT3("new")}
+            disabled={!state.machines.some((machine) => machine.status === "connected")}
+            onClick={() => window.overlay.open(state.panel === "new" ? null : "new")}
           >
             <Plus size={18} />
           </button>
