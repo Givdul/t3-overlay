@@ -33,7 +33,7 @@ export function Composer(props: ComposerProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<{ error: string; grant: boolean } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const wantFocus = useRef(false);
   const textRef = useRef("");
@@ -100,7 +100,7 @@ export function Composer(props: ComposerProps) {
 
     if (!reply.ok) {
       // A remote action T3 turned down is answered in T3, so the card carries T3's own message.
-      if (reply.refusal === true && props.onOpenInT3 !== null) setRefusal(reply.error);
+      if (reply.refusal === true && props.onOpenInT3 !== null) setRefusal({ error: reply.error, grant: reply.grant === true });
       else setError(reply.error);
       setDraftText(snapshot);
 
@@ -163,7 +163,12 @@ export function Composer(props: ComposerProps) {
       {refusal !== null && (
         <div className="mx-4 mt-1 mb-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[var(--t3-code-background)] p-2">
           <p className="text-[11px] leading-relaxed text-t3-muted">T3 Code did not take this from the overlay.</p>
-          <p className="mt-0.5 text-[12px] leading-relaxed whitespace-pre-wrap text-t3-fg">{refusal}</p>
+          <p className="mt-0.5 text-[12px] leading-relaxed whitespace-pre-wrap text-t3-fg">{refusal.error}</p>
+          {refusal.grant && (
+            <p className="mt-0.5 text-[11px] leading-relaxed text-t3-muted">
+              Grant remote control from the tray to allow this from the overlay.
+            </p>
+          )}
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}

@@ -49,6 +49,8 @@ export interface OverlayState {
   working: SidebarThread[];
   /** Threads that stopped working since they were last opened in the panel. */
   unread: ThreadRef[];
+  /** Whether a remote-control grant is in hand: the tray offers to grant one or to revoke it. */
+  remoteControl: boolean;
   panel: PanelTarget | null;
   /** How the panel last opened. The hotkey opens it at once, straight into typing. */
   panelEntrance: PanelEntrance;

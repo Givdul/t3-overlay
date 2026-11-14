@@ -50,6 +50,24 @@ Both are needed:
 A machine that does not answer is noted in the logo's tooltip, and its threads are not listed until
 it answers again.
 
+### Remote control
+
+T3 mints the overlay's `/mcp` session from its own CLI, and such a session carries no runtime-mode
+ceiling: T3 caps it at approval-required and refuses to act on a thread that runs at full access.
+The tray's **Grant remote control…** asks T3 for a session that does, through the sign-in T3 offers an
+MCP app. It runs only from that click, and it shows a confirmation first: full access on every linked
+machine, plus any ceiling a managed policy puts on it. Nothing is granted unless that is answered yes.
+
+The grant covers this PC's T3 acting on the linked machines for the overlay: sending, stopping,
+settling and answering on any thread there, whatever its runtime mode. It is sealed on this PC beside
+the other session tokens and used only for T3's `/mcp` endpoint. It lasts 30 days with no refresh;
+when it expires or T3 rejects it, the overlay drops it and goes back to its capped session, and the
+tray offers the grant again.
+
+**Revoke remote control** replaces the item while a grant exists. It deletes the sealed grant and
+revokes its session in T3, which `t3 auth session list` lists as an `mcp-client` session labelled
+`t3-overlay grant`.
+
 ## Deliberate losses
 
 The panel is a thin client, not T3's page. Some actions are only in T3 Code; the title row's
@@ -67,9 +85,9 @@ The panel is a thin client, not T3's page. Some actions are only in T3 Code; the
 - Mints its own session once with `t3 auth session issue --ttl 90d` and keeps it sealed with
   `safeStorage`. The token stays in the main process: the renderer only ever sees typed thread events
   and sends commands back.
-- Mints a second, read-only session for T3's `/mcp` endpoint (`--subject mcp-client --scope
-  orchestration:read`), sealed in its own file, to read the other machines' threads through this
-  PC's server.
+- Mints a second session for T3's `/mcp` endpoint (`--subject mcp-client`, with both orchestration
+  scopes), sealed in its own file, to read and act on the other machines' threads through this PC's
+  server. The tray can replace it with a full-access grant, described above.
 - Every URL is built from that pid-verified server origin. This PC's thread rows come from the
   server's shell stream; the other machines' come from its `/mcp` endpoint.
 

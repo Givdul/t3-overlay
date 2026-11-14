@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { watch } from "node:fs";
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
 import {
   PANEL_GAP,
   PANEL_MIN,
@@ -26,7 +26,8 @@ import {
 import type { PanelCommand, PanelMessage } from "../shared/panel";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
-import { ensureMcpSession, ensureSession, readServer, type T3Server } from "./t3";
+import { ensureMcpSession, ensureSession, hasMcpGrant, readServer, revokeMcpGrant, saveMcpGrant, type RejectedMcpToken, type T3Server } from "./t3";
+import { grantRemoteControl, type GrantConsent } from "./mcpAuth";
 import { startThreadFeed, type ProjectWorkspace, type ThreadFeed } from "./threads";
 import { startPanel, type Panel } from "./panel";
 import { startRemote, type Remote } from "./remote";
@@ -65,6 +66,7 @@ const state: OverlayState = {
   panelEntrance: "slide",
   panelSize: persisted.panelSize,
   popover: null,
+  remoteControl: false,
   side: "left",
   sidebarOffsetY: 0,
   sidebarListHeight: persisted.sidebarListHeight,
@@ -305,10 +307,13 @@ function startFeed(server: T3Server, token: string) {
 async function connectRemote(server: T3Server) {
   try {
     const token = await ensureMcpSession(server);
+    // Which token T3 would reject decides the fallback: the grant goes, the session is replaced.
+    const granted = hasMcpGrant();
 
     // Another connect, or none, happened while the token was loading.
     if (localServer !== server) return;
 
+    update({ remoteControl: granted });
     stopRemote();
     remote = startRemote({
       server,
@@ -316,7 +321,7 @@ async function connectRemote(server: T3Server) {
       onMachines: (machines) => update({ machines }),
       onThreads: setRemoteThreads,
       onPanel: sendPanelMessage,
-      onAuthExpired: () => refreshMcpSession(server),
+      onAuthExpired: () => refreshMcpSession(server, granted ? "grant" : "session"),
     });
     remote.setTarget(state.panel);
     remote.setVisible(win?.isVisible() ?? false);
@@ -325,15 +330,121 @@ async function connectRemote(server: T3Server) {
   }
 }
 
-/** A fresh MCP token after T3 rejected this one: the other machines' poll resumes with it. */
-function refreshMcpSession(server: T3Server) {
-  void ensureMcpSession(server, true)
-    .then(() => connectRemote(server))
-    .catch((error) => console.error("[t3] MCP session refresh failed", error));
+/** A token T3 rejected is replaced at most this often, so a server that rejects every token cannot mint one per poll. */
+const MCP_MINT_INTERVAL_MS = 5 * 60_000;
+
+let mcpMintedAt = 0;
+
+/**
+ * T3 rejected the token the feed was using. A rejected grant only falls back to the sealed session;
+ * a rejected session is replaced, at most once per interval. If the replacement is rejected too, the
+ * feed stops instead of minting again on the next poll.
+ */
+async function refreshMcpSession(server: T3Server, rejected: RejectedMcpToken) {
+  // The old feed would report the same rejection again while the replacement loads.
+  stopRemote();
+
+  if (rejected === "session") {
+    if (Date.now() - mcpMintedAt < MCP_MINT_INTERVAL_MS) {
+      console.error("[t3] T3 rejected a freshly minted MCP session; remote reads stay stopped");
+
+      return;
+    }
+
+    mcpMintedAt = Date.now();
+  }
+
+  try {
+    await ensureMcpSession(server, rejected);
+    await connectRemote(server);
+  } catch (error) {
+    console.error("[t3] MCP session refresh failed", error);
+  }
 }
 
 function sendPanelMessage(message: PanelMessage) {
   win?.webContents.send("overlay:panel", message);
+}
+
+// ---------------------------------------------------------------- remote control
+
+/**
+ * The tray's grant: T3's MCP OAuth flow, run only from that click. The user confirms what full access
+ * covers, including any managed-policy ceiling, and `/mcp` then uses the granted session until it
+ * expires, T3 rejects it, or the tray revokes it.
+ */
+async function grantRemote() {
+  const server = state.t3 === "connected" ? localServer : null;
+
+  if (server === null) return;
+
+  try {
+    const granted = await grantRemoteControl(server, await ensureSession(server), confirmRemoteControl);
+
+    if (granted === null) return;
+
+    await saveMcpGrant(server, granted);
+    update({ remoteControl: hasMcpGrant() });
+    await connectRemote(server);
+  } catch (error) {
+    console.error("[t3] granting remote control failed", error);
+    await dialog.showMessageBox({
+      type: "error",
+      message: "Remote control was not granted",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** The confirmation before the overlay asks for full access; no session is created unless it is answered yes. */
+function confirmRemoteControl(consent: GrantConsent): Promise<boolean> {
+  const ceiling = consent.runtimeModeCeiling;
+
+  return dialog
+    .showMessageBox({
+      type: "warning",
+      buttons: ["Grant full access", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      message: "Give the overlay full access on every linked machine?",
+      detail: [
+        "T3 Code on this PC can then send, stop, settle and answer on any thread on the machines linked to this PC, including threads that run at full access.",
+        "Full access also lets it change settings and act on source control on those machines.",
+        ceiling === undefined
+          ? null
+          : `A managed policy for ${ceiling.organization} limits this grant to ${ceiling.maxRuntimeMode}.`,
+        "The grant lasts 30 days. Revoke it from this menu at any time.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n\n"),
+    })
+    .then(({ response }) => response === 0);
+}
+
+/**
+ * Deletes the grant and revokes its session, then goes back to the minted session for `/mcp`. A revoke
+ * that fails is reported: the sealed grant is gone either way, so the overlay stops using it, but T3
+ * may still accept the session until it is revoked from the CLI.
+ */
+async function revokeRemote() {
+  try {
+    await revokeMcpGrant();
+  } catch (error) {
+    console.error("[t3] revoking remote control failed", error);
+    await dialog.showMessageBox({
+      type: "error",
+      message: "Remote control may still be granted",
+      detail: [
+        error instanceof Error ? error.message : String(error),
+        "The overlay has stopped using the grant, but T3 may still accept its session.",
+        "Run `t3 auth session list`, then `t3 auth session revoke <id>` for the mcp-client session labelled t3-overlay grant.",
+      ].join("\n\n"),
+    });
+  }
+
+  update({ remoteControl: hasMcpGrant() });
+
+  if (state.t3 === "connected" && localServer !== null) await connectRemote(localServer);
 }
 
 /** A fresh token after T3 rejected this one: the feed and the panel reconnect with it. */
@@ -707,6 +818,8 @@ const trayActions = {
     save();
   },
   launchT3: () => void launchT3(),
+  grantRemoteControl: () => void grantRemote(),
+  revokeRemoteControl: () => void revokeRemote(),
   editConfig: () => void shell.openPath(configPath()),
   quit: () => app.quit(),
 };

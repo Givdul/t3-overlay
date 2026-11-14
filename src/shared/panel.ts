@@ -181,6 +181,8 @@ export interface PanelFailure {
   ok: false;
   error: string;
   refusal?: true;
+  /** T3 refused because the session's access is below the thread's: granting remote control lifts it. */
+  grant?: true;
 }
 
 export type PanelReply = { ok: true } | PanelFailure;

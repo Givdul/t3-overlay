@@ -566,7 +566,12 @@ export function startRemote(options: RemoteOptions): Remote {
       if (error instanceof McpToolError) {
         const refusal = error.code === "runtime_mode_escalation_denied" || error.code === "capability_denied";
 
-        return refusal ? { ok: false, error: error.detail, refusal: true } : refuse(error.detail);
+        if (!refusal) return refuse(error.detail);
+
+        // Only the ceiling is the tray's to lift; a capability T3 withholds from every session is not.
+        return error.code === "runtime_mode_escalation_denied"
+          ? { ok: false, error: error.detail, refusal: true, grant: true }
+          : { ok: false, error: error.detail, refusal: true };
       }
 
       return refuse(error instanceof Error ? error.message : String(error));
