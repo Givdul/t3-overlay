@@ -1,4 +1,4 @@
-import { CircleAlert, CircleHelp, Ellipsis, LoaderCircle, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleHelp, Ellipsis, ExternalLink, LoaderCircle, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import type { PanelApprovalDecision, PanelApprovalOption, PanelQuestion, PanelRuntimeRequest } from "../../../shared/panel";
 import type { PendingRequests } from "./model";
@@ -27,7 +27,14 @@ const DEFAULT_APPROVAL_OPTIONS: PanelApprovalOption[] = [
   { decision: "accept", label: "Approve" },
 ];
 
-export function ApprovalCard({ request }: { request: PendingRequests["approvals"][number] }) {
+export function ApprovalCard({
+  request,
+  openInT3,
+}: {
+  request: PendingRequests["approvals"][number];
+  /** Set for a thread on another machine, where `/mcp` can list an approval but not answer it. */
+  openInT3: (() => void) | null;
+}) {
   const [busy, setBusy] = useState<PanelApprovalDecision | null>(null);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +67,14 @@ export function ApprovalCard({ request }: { request: PendingRequests["approvals"
         <p className="mt-1 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--t3-foreground)]">{request.prompt}</p>
       )}
       {request.reason !== null && <p className="mt-1 text-[11px] text-t3-muted">{request.reason}</p>}
-      {live ? (
+      {openInT3 !== null ? (
+        <div className="mt-2 flex items-center gap-2">
+          <button type="button" className={action} onClick={openInT3}>
+            <ExternalLink size={11} />
+            Open in T3
+          </button>
+        </div>
+      ) : live ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {primaryOptions.map((option) => (
             <ApprovalOptionButton
@@ -194,7 +208,7 @@ export function QuestionCard({ request }: { request: PendingRequests["questions"
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const live = request.responseCapability.type === "live" || request.responseCapability.type === "message";
+  const live = request.remote === true || request.responseCapability.type === "live" || request.responseCapability.type === "message";
 
   const answers = request.questions.flatMap<{ id: string; answer: string | string[] }>((question) => {
     const id = question.id ?? "";

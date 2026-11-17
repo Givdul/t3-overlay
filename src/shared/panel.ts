@@ -117,6 +117,8 @@ export interface PanelRuntimeRequest {
   status: string;
   /** Only a "live" capability can be answered from another client. */
   responseCapability: { type: string };
+  /** A request read from another machine: questions go through /mcp, approvals only through T3. */
+  remote?: true;
 }
 
 export interface PanelTodoStep {
@@ -319,9 +321,12 @@ export type PanelThreadCommand =
   | { type: "send"; text: string; queue: boolean; attachments: PanelAttachment[] }
   /** Uploads the file's bytes through main, which holds the token, and returns T3's record. */
   | { type: "attach"; name: string; mimeType: string; sizeBytes: number; data: ArrayBuffer }
-  /** `runId` comes from the panel's own run list, which folds the stream's events in. */
+  /** Stops the active run, as T3 Code's own Stop button does. */
   | { type: "stop" }
-  /** Kills an agent that ignored Stop (`orchestration.forceStopThread`). */
+  /**
+   * Kills an agent that ignored Stop (`orchestration.forceStopThread`); `runId` comes from the panel's
+   * own run list, which folds the stream's events in.
+   */
   | { type: "forceStop"; runId: string }
   /** Cancels a message that is still waiting behind the active turn (`queued-run.cancel`). */
   | { type: "cancelQueued"; runId: string }
@@ -354,16 +359,25 @@ export type PanelThreadCommand =
 
 export type PanelCommand = PanelThreadCommand | PanelDraftCommand;
 
-export type PanelReply = { ok: true } | { ok: false; error: string };
+/** `refusal` is T3 turning the action down, which only T3 itself can finish. */
+export interface PanelFailure {
+  ok: false;
+  error: string;
+  refusal?: true;
+  /** T3 refused because the session's access is below the thread's: granting remote control lifts it. */
+  grant?: true;
+}
 
-export type PanelItemReply = { ok: true; item: PanelItem } | { ok: false; error: string };
+export type PanelReply = { ok: true } | PanelFailure;
 
-export type PanelAttachmentReply = { ok: true; attachment: PanelAttachment } | { ok: false; error: string };
+export type PanelItemReply = { ok: true; item: PanelItem } | PanelFailure;
 
-export type PanelModelsReply = { ok: true; providers: PanelModelProvider[] } | { ok: false; error: string };
+export type PanelAttachmentReply = { ok: true; attachment: PanelAttachment } | PanelFailure;
+
+export type PanelModelsReply = { ok: true; providers: PanelModelProvider[] } | PanelFailure;
 
 /** T3's transcript of a recording; `text` is empty when it heard no speech. */
-export type PanelVoiceReply = { ok: true; text: string } | { ok: false; error: string };
+export type PanelVoiceReply = { ok: true; text: string } | PanelFailure;
 
 /**
  * What a force stop did (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ForceStopThreadResult).
@@ -371,9 +385,9 @@ export type PanelVoiceReply = { ok: true; text: string } | { ok: false; error: s
  */
 export type PanelForceStopReply =
   | { ok: true; outcome: string; sharedWithThreadIds: string[] }
-  | { ok: false; error: string };
+  | PanelFailure;
 
-export type PanelDraftReply = { ok: true; draft: PanelDraft } | { ok: false; error: string };
+export type PanelDraftReply = { ok: true; draft: PanelDraft } | PanelFailure;
 
 /** A created thread's id; main opens the panel on it and the shell feed adds it to the sidebar. */
-export type PanelCreateReply = { ok: true; threadId: string } | { ok: false; error: string };
+export type PanelCreateReply = { ok: true; threadId: string } | PanelFailure;

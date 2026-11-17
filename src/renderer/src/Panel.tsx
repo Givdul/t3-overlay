@@ -102,6 +102,17 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   // is reopening it, rather than a thread being read for the first time.
   const reconnecting = !draftOpen && panel.status === "connecting" && view !== null && view.thread.id === threadId;
 
+  // A thread on another machine is read through this PC's T3 server, and acted on through its `/mcp`
+  // endpoint. An approval has no `/mcp` call, so its card hands the thread to T3.
+  const remote = thread !== null && state.localEnvironmentId !== null && thread.environmentId !== state.localEnvironmentId;
+
+  const machine =
+    remote && thread !== null
+      ? (state.machines.find((candidate) => candidate.environmentId === thread.environmentId)?.label ?? null)
+      : null;
+
+  const openInT3 = remote && thread !== null ? () => window.overlay.openInT3(thread) : null;
+
   const statusLabel = draftOpen
     ? ""
     : panel.status === "ended"
@@ -255,7 +266,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         } as CSSProperties
       }
     >
-      {!titleInCard && <TitleRow title={title} target={thread} />}
+      {!titleInCard && <TitleRow title={title} target={thread} machine={machine} />}
 
       <div className="relative flex min-h-0 flex-1">
         <div ref={scroller} onScroll={onScroll} className={historyClass} style={{ direction: side === "left" ? "rtl" : "ltr" }}>
@@ -276,6 +287,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
                 onCancelEditQueued={cancelQueuedEdit}
                 onCancelQueued={cancelQueued}
                 onLink={(url) => window.overlay.openLink(url)}
+                onOpenInT3={openInT3}
               />
             ) : panel.status === "ended" ? (
               <PlaceholderCard
@@ -344,6 +356,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
             composer.current?.focus();
           }}
           onSent={() => window.overlay.sent()}
+          onOpenInT3={openInT3}
           handle={composer}
         />
       )}
@@ -383,13 +396,14 @@ function outlineClass(outline: OverlaySettings["textOutline"]): string {
   return outline === "off" ? "" : `text-outline-${outline}`;
 }
 
-function TitleRow({ title, target }: { title: string; target: ThreadRef | null }) {
+function TitleRow({ title, target, machine }: { title: string; target: ThreadRef | null; machine: string | null }) {
   return (
     <div
       className="flex h-[34px] shrink-0 items-center gap-2 truncate rounded-t-[12px] border border-[var(--t3-chat-border)] bg-[var(--t3-chat-bg)] pr-1.5 pl-3 text-[13px] font-semibold text-t3-fg"
       style={{ borderBottomColor: "color-mix(in srgb, var(--t3-border) 50%, transparent)" }}
     >
       <span className="min-w-0 flex-1 truncate">{title}</span>
+      {machine !== null && <span className="max-w-[45%] shrink-0 truncate text-[11px] font-normal text-t3-muted">{machine}</span>}
       {target !== null && <OpenInT3 target={target} />}
     </div>
   );

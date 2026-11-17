@@ -63,10 +63,12 @@ interface TimelineProps {
   /** Resolves to an error to show, or null when the queued message was cancelled. */
   onCancelQueued(message: PanelQueuedMessage): Promise<string | null>;
   onLink: LinkHandler;
+  /** Set for a thread on another machine: its approvals open in T3, which alone can answer them. */
+  onOpenInT3: (() => void) | null;
 }
 
 export function Timeline(props: TimelineProps) {
-  const { view, pending, stop, editingRunId, onLink } = props;
+  const { view, pending, stop, editingRunId, onLink, onOpenInT3 } = props;
   const editBlocked = queuedRunEditBlockedReason(pending);
 
   return (
@@ -79,6 +81,7 @@ export function Timeline(props: TimelineProps) {
           connection={props.connection}
           commandOutputStreaming={view.commandOutputStreaming}
           onLink={onLink}
+          onOpenInT3={onOpenInT3}
         />
       ))}
       {view.queued.map((message) => (
@@ -255,6 +258,7 @@ function TimelineRow({
   connection,
   commandOutputStreaming,
   onLink,
+  onOpenInT3,
 }: {
   item: PanelItem;
   pending: PendingRequests;
@@ -263,6 +267,8 @@ function TimelineRow({
   /** T3 streams a running command's output; false keeps the per-row fetch. */
   commandOutputStreaming: boolean;
   onLink: LinkHandler;
+  /** Set for a thread on another machine: its approvals open in T3, which alone can answer them. */
+  onOpenInT3: (() => void) | null;
 }) {
   switch (item.type) {
     case "user_message":
@@ -301,7 +307,7 @@ function TimelineRow({
       const request = pending.approvals.find((candidate) => candidate.id === item.requestId);
 
       // A resolved approval was answered in T3 or here; its card is gone and leaves no row behind.
-      return request === undefined ? null : <ApprovalCard request={request} />;
+      return request === undefined ? null : <ApprovalCard request={request} openInT3={onOpenInT3} />;
     }
 
     case "user_input_request": {
