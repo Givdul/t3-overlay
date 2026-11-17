@@ -43,18 +43,34 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const current = useRef(options);
   current.current = options;
+  const attachmentsNow = useRef(attachments);
+  attachmentsNow.current = attachments;
+  /** Uploads a sent message references: T3 owns those, so dropping them from the composer keeps them. */
+  const sent = useRef(new Set<string>());
+  const mounted = useRef(true);
 
   // The card stays open while a chip is on it, and its send button waits for the uploads.
   useEffect(() => {
     current.current.onBusy(current.current.active || attachments.length > 0);
   }, [options.active, attachments.length]);
 
-  // A thread switch drops the drafts it would otherwise carry over; an upload that finishes after
-  // the switch leaves the new thread's list alone.
+  // A thread switch drops the drafts it would otherwise carry over, and releases the uploads it never
+  // sent; an upload that finishes after the switch leaves the new thread's list alone.
   useEffect(() => {
+    releaseAll(attachmentsNow.current, sent.current);
+    sent.current = new Set();
     setAttachments([]);
     current.current.onError(null);
   }, [options.threadKey]);
+
+  // Closing the panel abandons the composer: T3 would delete the same uploads, and never a sent one.
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      releaseAll(attachmentsNow.current, sent.current);
+    },
+    [],
+  );
 
   async function upload(files: File[]) {
     const capability = current.current.capability;
@@ -97,12 +113,22 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
         reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
 
-      // The reader moved to another thread meanwhile: this upload belongs to the thread it started on.
-      if (current.current.threadKey !== threadKey) continue;
-
       // An `ok` reply without an attachment is a send's, which this command never makes.
       const uploaded = reply.ok && "attachment" in reply ? reply.attachment : null;
       const failure = reply.ok ? (uploaded === null ? "T3 did not accept the upload" : null) : reply.error;
+
+      // The reader moved to another thread, closed the panel, or removed this chip meanwhile: the upload
+      // belongs to no draft here, so T3 deletes it as its own composer does.
+      const stillDrafted =
+        current.current.threadKey === threadKey &&
+        mounted.current &&
+        attachmentsNow.current.some((candidate) => candidate.key === key);
+
+      if (!stillDrafted) {
+        if (uploaded !== null) releaseUpload(uploaded.id);
+
+        continue;
+      }
 
       setAttachments((list) =>
         list.map((attachment) => {
@@ -119,10 +145,20 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
   }
 
   function remove(attachment: DraftAttachment) {
-    setAttachments((list) => list.filter((candidate) => candidate.key !== attachment.key));
+    // The ref drops it first, so an unmount before React's next render releases it once, not twice.
+    attachmentsNow.current = attachmentsNow.current.filter((candidate) => candidate.key !== attachment.key);
+    setAttachments(attachmentsNow.current);
+
+    if (attachment.id !== null) releaseUpload(attachment.id);
   }
 
   function clear() {
+    // A successful send hands these uploads to T3; only an abandoned draft deletes them.
+    for (const attachment of attachmentsNow.current) {
+      if (attachment.id !== null) sent.current.add(attachment.id);
+    }
+
+    attachmentsNow.current = [];
     setAttachments([]);
   }
 
@@ -134,6 +170,18 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
     remove,
     clear,
   };
+}
+
+/** Deletes one upload no message references, as T3's composer releases a dropped attachment. */
+function releaseUpload(attachmentId: string) {
+  void window.overlay.panel({ type: "releaseAttachment", attachmentId }).catch(() => undefined);
+}
+
+/** Releases every uploaded chip that a send did not claim; an unfinished upload has no id to delete yet. */
+function releaseAll(attachments: DraftAttachment[], sent: Set<string>) {
+  for (const attachment of attachments) {
+    if (attachment.id !== null && !sent.has(attachment.id)) releaseUpload(attachment.id);
+  }
 }
 
 /** A data: URL for the composer's tile; pieces keep fromCharCode off the argument limit. */

@@ -77,7 +77,6 @@ function applyMessage(state: PanelState, message: PanelMessage): PanelState {
 const IGNORED_EVENTS = new Set([
   "message.updated",
   "node.updated",
-  "plan.updated",
   "provider-turn.updated",
   "provider-thread.updated",
   "provider-session.attached",
@@ -108,6 +107,15 @@ function applyEvent(state: PanelState, event: PanelEvent): PanelState {
     case "run.created":
     case "run.updated":
       return applyRun(next, view, event.payload);
+    case "plan.updated": {
+      const plan = event.payload.plan;
+
+      if (plan === undefined) return next;
+
+      const plans = upsertBy(view.plans, plan, (candidate) => candidate.id === plan.id);
+
+      return { ...next, view: { ...view, plans } };
+    }
     case "run-attempt.created":
     case "run-attempt.updated":
       return applyAttempt(next, view, event.payload);

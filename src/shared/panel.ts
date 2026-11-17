@@ -140,7 +140,10 @@ export interface PanelProject {
   icon: ProjectIcon;
   /** T3's scratch workspace, which the picker offers as "No project". */
   scratch: boolean;
-  /** The project's own default model; T3's server default applies when it names none. */
+  /**
+   * The model a new thread in this project starts on, with its options: the project's own setting, else
+   * T3's server default (apps/web/src/hooks/useHandleNewThread.ts → resolveProjectSettings).
+   */
   defaultModelSelection: PanelModelSelection | null;
   /** The permission mode a thread in this project starts in: the project's, else T3's own default. */
   defaultRuntimeMode: string;
@@ -151,7 +154,7 @@ export interface PanelDraft {
   projects: PanelProject[];
   /** The project the draft starts in: the newest thread's, else the first project. */
   defaultProjectId: string | null;
-  /** The model T3 starts a new thread on (packages/contracts/src/settings.ts, defaultModelSelection). */
+  /** The model T3 starts a new thread on when the project names none (settings.ts, defaultModelSelection). */
   defaultModelSelection: PanelModelSelection | null;
   /** The permission mode T3's own setting starts a thread in (settings.ts, defaultRuntimeMode). */
   defaultRuntimeMode: string;
@@ -200,6 +203,15 @@ export interface PanelCommandOutput {
 
 export interface PanelRun {
   id: string;
+  status: string;
+}
+
+/** One plan a thread has proposed (packages/contracts/src/orchestrationV2.ts, OrchestrationV2PlanArtifact). */
+export interface PanelPlan {
+  id: string;
+  /** "proposed_plan" or "todo_list". */
+  kind: string;
+  /** "draft", "active", "completed" or "superseded". */
   status: string;
 }
 
@@ -267,6 +279,8 @@ export interface PanelItem {
   text?: string;
   streaming?: boolean;
   markdown?: string;
+  /** The plan a plan row draws (packages/contracts/src/orchestrationV2.ts, proposed_plan.planId). */
+  planId?: string;
   steps?: PanelTodoStep[];
   input?: string;
   output?: string;
@@ -358,6 +372,8 @@ export interface PanelView {
   items: PanelItemRef[];
   /** Messages queued behind the active run, in T3's queue order. */
   queued: PanelQueuedMessage[];
+  /** The thread's plans; the latest active one offers T3's Implement follow-up. */
+  plans: PanelPlan[];
   /**
    * T3's force-stop capability (packages/contracts/src/environment.ts, `threadForceStop`); false hides
    * Force stop, as T3's own clients hide it.
@@ -385,6 +401,16 @@ export interface PanelView {
    * thread is read through `/mcp`, which offers neither, so its composer hides both.
    */
   composerMenus: boolean;
+  /**
+   * Whether an active plan offers T3's Implement follow-up. Another machine's plan is read through `/mcp`,
+   * which cannot carry the plan reference back, so its cards hide the action.
+   */
+  planImplementation: boolean;
+  /**
+   * Whether image attachments draw as thumbnails from T3's signed asset URLs. Another machine's thread
+   * keeps its chips: its assets are not minted here.
+   */
+  imagePreviews: boolean;
 }
 
 /** The fields of a domain event the panel folds in; everything else stays in main. */
@@ -400,6 +426,8 @@ export interface PanelEventPayload {
   modelSelection?: PanelModelSelection;
   runtimeMode?: string;
   interactionMode?: string;
+  /** A `plan.updated` event's plan, so a plan card follows its status (completed once implemented). */
+  plan?: PanelPlan;
 }
 
 export interface PanelEvent {
@@ -484,6 +512,18 @@ export type PanelThreadCommand =
   | { type: "setRuntimeMode"; runtimeMode: string }
   /** Puts the thread in plan mode, or back to default (`thread.interaction-mode.set`). */
   | { type: "setInteractionMode"; interactionMode: string }
+  /**
+   * T3's Implement follow-up on the latest plan: switches the thread out of plan mode and sends the plan
+   * back to its agent (apps/web/src/proposedPlan.ts, PLAN_IMPLEMENTATION_PROMPT_PREFIX).
+   */
+  | { type: "implementPlan"; planId: string }
+  /**
+   * Mints one image attachment's signed asset URL, which T3's own web client puts in an `<img>`
+   * (packages/contracts/src/rpc.ts, assets.createUrl). The bearer token stays in main.
+   */
+  | { type: "attachmentUrl"; attachmentId: string }
+  /** Deletes a pending upload T3 would delete when its composer drops it (`attachments.delete`). */
+  | { type: "releaseAttachment"; attachmentId: string }
   /** Asks T3 whether it can transcribe now, so a missing model is reported before a recording. */
   | { type: "voiceStatus" }
   /**
@@ -508,6 +548,9 @@ export type PanelReply = { ok: true } | PanelFailure;
 export type PanelItemReply = { ok: true; item: PanelItem } | PanelFailure;
 
 export type PanelAttachmentReply = { ok: true; attachment: PanelAttachment } | PanelFailure;
+
+/** One attachment's signed asset URL; the renderer draws it without ever holding the bearer token. */
+export type PanelAttachmentUrlReply = { ok: true; url: string } | PanelFailure;
 
 /**
  * The administrator's policy for this T3, which caps the permission modes a thread may run

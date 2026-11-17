@@ -713,16 +713,21 @@ function viewOf(current: OpenThread): PanelView {
     rows,
     items: rows.map((row) => refOf(row.item)),
     queued: [],
+    // A thread read carries no plan artifacts: its plan cards cannot implement one through `/mcp`.
+    plans: [],
     // Another machine's thread is read-only here: T3 alone keeps its queue, uploads, dictation, live
     // command output and force stop, so the composer draws none of those controls. Its permission mode,
     // plan mode and model options are the same: this machine's server takes no such setting for it. Its
-    // `/` and `@` menus are too: neither `/mcp` nor this socket searches that machine's files.
+    // `/` and `@` menus are too: neither `/mcp` nor this socket searches that machine's files. Its images
+    // and plans are read as text only: assets are not minted here, and no plan reference would travel.
     threadForceStop: false,
     attachmentUploads: null,
     voiceTranscription: false,
     commandOutputStreaming: false,
     modelTraits: false,
     composerMenus: false,
+    planImplementation: false,
+    imagePreviews: false,
   };
 }
 

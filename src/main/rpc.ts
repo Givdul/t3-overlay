@@ -20,10 +20,17 @@ export interface WirePayload {
   messageId?: string;
   text?: string;
   attachments?: PanelAttachment[];
+  // `message.dispatch` also names the plan it implements (packages/contracts/src/orchestrationV2.ts,
+  // sourcePlanRef), which the server marks completed once the turn starts.
+  sourcePlanRef?: { threadId: string; planId: string };
   // `attachments.createUploadUrl` asks for one upload slot; its `type` selects image or file.
   name?: string;
   mimeType?: string;
   sizeBytes?: number;
+  // `attachments.delete` names the pending upload its composer dropped.
+  attachmentId?: string;
+  // `assets.createUrl` asks for one signed asset URL (packages/contracts/src/assets.ts, AssetResource).
+  resource?: { _tag: string; attachmentId?: string };
   createdBy?: string;
   creationSource?: string;
   dispatchMode?: { type: string };
@@ -61,6 +68,8 @@ export type ThreadCommand =
       createdBy: "user";
       creationSource: "web";
       dispatchMode: { type: "start_immediately" } | { type: "queue_after_active" };
+      /** The plan this turn implements, which T3 then marks completed (orchestrationV2.ts). */
+      sourcePlanRef?: { threadId: string; planId: string };
     }
   | { type: "thread.stop"; threadId: string }
   /** The queued message a user cancels or rewrites (packages/contracts/src/orchestrationV2.ts). */

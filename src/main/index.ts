@@ -340,6 +340,8 @@ function startFeed(server: T3Server, token: string) {
     environmentId: server.environmentId,
     // The composer's `@` menu searches a project's own checkout, which the shell lists by project id.
     projectRoot: (projectId) => projects.find((project) => project.projectId === projectId)?.workspaceRoot ?? null,
+    // The panel's own reconnect re-reads T3's descriptor, so an upgraded server's flags are not stale.
+    refreshServer: readServer,
     onMessage: sendPanelMessage,
     onAuthExpired: () => refreshSession(server),
   });

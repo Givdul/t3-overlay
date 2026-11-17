@@ -5,6 +5,7 @@ import type {
   PanelAttachment,
   PanelAttachmentReply,
   PanelAttachmentUploads,
+  PanelAttachmentUrlReply,
   PanelAttempt,
   PanelCommandOutput,
   PanelEntriesReply,
@@ -27,6 +28,7 @@ import type {
   PanelModelSelection,
   PanelModelsReply,
   PanelModelToggleOption,
+  PanelPlan,
   PanelProjectEntry,
   PanelProviderCommand,
   PanelProviderSkill,
@@ -113,6 +115,8 @@ interface WireItem {
   attachments?: WireAttachment[];
   streaming?: boolean;
   markdown?: string;
+  /** The plan a proposed_plan row draws (orchestrationV2.ts, proposed_plan.planId). */
+  planId?: string;
   steps?: WireTodoStep[];
   input?: string | object;
   output?: string | object;
@@ -191,7 +195,7 @@ interface WireOptionDescriptor {
 }
 
 /** A thread's model (packages/contracts/src/modelSelection.ts); `provider` is the older spelling of `instanceId`. */
-interface WireModelSelection {
+export interface WireModelSelection {
   instanceId?: string;
   provider?: string;
   model?: string;
@@ -234,12 +238,20 @@ interface WireRow {
   item?: WireItem;
 }
 
+/** One plan the thread has proposed (packages/contracts/src/orchestrationV2.ts, OrchestrationV2PlanArtifact). */
+interface WirePlan {
+  id?: string;
+  kind?: string;
+  status?: string;
+}
+
 interface WireProjection {
   thread?: WireThread;
   messages?: WireMessage[];
   runs?: WireRun[];
   attempts?: WireAttempt[];
   runtimeRequests?: WireRuntimeRequest[];
+  plans?: WirePlan[];
   visibleTurnItems?: WireRow[];
   turnItems?: WireItem[];
 }
@@ -277,6 +289,12 @@ interface WireCommandOutputFrame {
 /** `attachments.createUploadUrl` mints one signed slot to POST a file's bytes to. */
 interface WireUploadReply {
   attachmentId?: string;
+  relativeUrl?: string;
+  expiresAt?: number;
+}
+
+/** `assets.createUrl`'s answer (packages/contracts/src/assets.ts, AssetCreateUrlResult). */
+interface WireAssetUrlReply {
   relativeUrl?: string;
   expiresAt?: number;
 }
@@ -367,8 +385,10 @@ export interface WireServerConfig {
     providerModelPreferences?: Record<string, { hiddenModels?: string[] }>;
     defaultModelSelection?: WireModelSelection | null;
     defaultRuntimeMode?: string;
+    /** Once folded, project settings live only in the overrides, as T3's own resolver treats them. */
+    projectSettingsFolded?: boolean;
     /** A project's own settings override the server's, as its web draft's runtime mode reads them. */
-    projectSettingsOverrides?: Record<string, { defaultRuntimeMode?: string }>;
+    projectSettingsOverrides?: Record<string, { defaultRuntimeMode?: string; defaultModelSelection?: WireModelSelection | null }>;
   };
   /** Present when an administrator's policy manages this environment. */
   managedPolicy?: WireManagedPolicy | null;
@@ -381,11 +401,12 @@ interface WireForceStopResult {
   sharedWithThreadIds?: string[];
 }
 
-/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, the provider catalog, a file search and a force stop. */
+/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, an asset URL, the provider catalog, a file search and a force stop. */
 type WireReply =
   | WireProjection
   | WireTurnItemReply
   | WireUploadReply
+  | WireAssetUrlReply
   | WireServerConfig
   | WireForceStopResult
   | WireSearchReply;
@@ -397,6 +418,8 @@ export interface PanelOptions {
   environmentId: string;
   /** The checkout a project runs in, which its composer's `@` menu searches; null when T3 lists none. */
   projectRoot: (projectId: string) => string | null;
+  /** Re-reads T3's environment descriptor, so an upgraded or restarted server's capabilities are not stale. */
+  refreshServer?: () => Promise<T3Server | null>;
   onMessage: (message: PanelMessage) => void;
   onAuthExpired: () => void;
 }
@@ -410,6 +433,7 @@ export interface Panel {
     | PanelReply
     | PanelItemReply
     | PanelAttachmentReply
+    | PanelAttachmentUrlReply
     | PanelModelsReply
     | PanelEntriesReply
     | PanelVoiceReply
@@ -421,6 +445,12 @@ export interface Panel {
 /** Long tool output is fetched per row instead; an event stream must not carry megabytes. */
 const OUTPUT_LIMIT = 8000;
 
+/**
+ * T3's own follow-up text when a plan is implemented; the server reads the plan from `sourcePlanRef`
+ * (apps/web/src/proposedPlan.ts, PLAN_IMPLEMENTATION_PROMPT_PREFIX).
+ */
+const PLAN_IMPLEMENTATION_PROMPT = "PLEASE IMPLEMENT THIS PLAN:\n";
+
 /** How many files and folders the composer's `@` menu asks T3 for (apps/web/src/state/queries.ts, COMPOSER_PATH_SEARCH_LIMIT). */
 const COMPOSER_SEARCH_LIMIT = 80;
 
@@ -429,6 +459,10 @@ const STALE_DELAY_MS = 500;
 
 export function startPanel(options: PanelOptions): Panel {
   let target: ThreadRef | null = null;
+  /** T3's descriptor as last read; a reconnect re-reads it so an upgraded server's flags are not stale. */
+  let server = options.server;
+  /** Whether this panel has subscribed before, so the next one is a reconnect or a thread switch. */
+  let subscribed = false;
   let rpc: T3Rpc<WireReply> | null = null;
   let stopStream: (() => void) | null = null;
   /** The last sequence main forwarded: a resubscribe resumes after it. */
@@ -485,6 +519,22 @@ export function startPanel(options: PanelOptions): Panel {
   }
 
   /**
+   * T3 may have been upgraded or restarted on the same origin since the descriptor was read. Re-reading it
+   * keeps the capability flags the next snapshot carries current; another origin is main's to reconnect.
+   */
+  async function refreshServer() {
+    if (options.refreshServer === undefined) return;
+
+    try {
+      const next = await options.refreshServer();
+
+      if (next !== null && next.origin === server.origin && next.environmentId === server.environmentId) server = next;
+    } catch (error) {
+      console.warn("[panel] re-reading the descriptor failed", error);
+    }
+  }
+
+  /**
    * One expanded running row's output. T3's hub sends a bounded tail (`replace`) and then appends, and ends
    * the stream itself when the command settles (apps/server/src/orchestration-v2/CommandOutputHub.ts).
    */
@@ -492,7 +542,7 @@ export function startPanel(options: PanelOptions): Panel {
     if (rpc === null) return refuse("T3 is not connected");
 
     // T3's own clients read the same capability; an older server has no such route.
-    if (!options.server.commandOutputStreaming) return refuse("This T3 server does not stream command output");
+    if (!server.commandOutputStreaming) return refuse("This T3 server does not stream command output");
 
     if (commandOutputs.has(itemId)) return { ok: true };
 
@@ -548,10 +598,15 @@ export function startPanel(options: PanelOptions): Panel {
     generation = current;
     options.onMessage({ kind: "status", status: "connecting" });
 
+    // A thread switch or a dropped socket lands here: T3's flags may have changed with its server.
+    if (subscribed) await refreshServer();
+
+    if (current !== generation) return;
+
     let connection: T3Rpc<WireReply>;
 
     try {
-      connection = await connect<WireReply>(options.server, options.token);
+      connection = await connect<WireReply>(server, options.token);
     } catch (error) {
       if (current !== generation) return;
 
@@ -577,6 +632,7 @@ export function startPanel(options: PanelOptions): Panel {
 
     rpc = connection;
     connectedAt = Date.now();
+    subscribed = true;
     const payload: WirePayload = { threadId, requestCompletionMarker: true };
 
     if (lastSequence > 0) payload.afterSequence = lastSequence;
@@ -601,10 +657,10 @@ export function startPanel(options: PanelOptions): Panel {
       case "snapshot": {
         const next = trimView(
           item.projection,
-          options.server.attachmentUploads,
-          options.server.voiceTranscription,
-          options.server.threadForceStop,
-          options.server.commandOutputStreaming,
+          server.attachmentUploads,
+          server.voiceTranscription,
+          server.threadForceStop,
+          server.commandOutputStreaming,
         );
 
         if (next === null) return;
@@ -648,10 +704,10 @@ export function startPanel(options: PanelOptions): Panel {
 
       const next = trimView(
         projection,
-        options.server.attachmentUploads,
-        options.server.voiceTranscription,
-        options.server.threadForceStop,
-        options.server.commandOutputStreaming,
+        server.attachmentUploads,
+        server.voiceTranscription,
+        server.threadForceStop,
+        server.commandOutputStreaming,
       );
       // The reader may have switched threads while this read was in flight.
       const current = target;
@@ -691,7 +747,7 @@ export function startPanel(options: PanelOptions): Panel {
   async function withRpc<T>(use: (connection: T3Rpc<WireReply>) => Promise<T>): Promise<T> {
     if (rpc !== null) return use(rpc);
 
-    const connection = await connect<WireReply>(options.server, options.token);
+    const connection = await connect<WireReply>(server, options.token);
 
     try {
       return await use(connection);
@@ -740,6 +796,7 @@ export function startPanel(options: PanelOptions): Panel {
     | PanelReply
     | PanelItemReply
     | PanelAttachmentReply
+    | PanelAttachmentUrlReply
     | PanelModelsReply
     | PanelEntriesReply
     | PanelVoiceReply
@@ -750,18 +807,18 @@ export function startPanel(options: PanelOptions): Panel {
       switch (next.type) {
         // Voice is plain HTTP to the same server, so a reconnecting thread socket does not stop it.
         case "voiceStatus":
-          return await voiceStatus(options.server, options.token);
+          return await voiceStatus(server, options.token);
         case "transcribe":
           // The audio crosses the IPC boundary as an ArrayBuffer; anything else has no samples to send.
           if (!(next.pcm instanceof ArrayBuffer)) return refuse("That recording could not be read");
 
-          return await transcribePcm(options.server, options.token, next.pcm);
+          return await transcribePcm(server, options.token, next.pcm);
         case "models":
           return await readCatalog(next.projectId);
         case "entries":
           return await readEntries(next.projectId, next.query);
         case "attach": {
-          const capability = options.server.attachmentUploads;
+          const capability = server.attachmentUploads;
 
           if (capability === null) return refuse("This T3 server does not accept attachments");
 
@@ -790,7 +847,7 @@ export function startPanel(options: PanelOptions): Panel {
             return refuse("T3 did not mint an upload slot");
           }
 
-          const uploaded = await fetch(new URL(minted.relativeUrl, options.server.origin), {
+          const uploaded = await fetch(new URL(minted.relativeUrl, server.origin), {
             method: "POST",
             headers: { "content-type": mimeType },
             body: data,
@@ -808,6 +865,25 @@ export function startPanel(options: PanelOptions): Panel {
 
           return { ok: true, attachment };
         }
+
+        case "attachmentUrl": {
+          const reply = await withRpc((connection) =>
+            connection.request<WireAssetUrlReply>("assets.createUrl", {
+              resource: { _tag: "attachment", attachmentId: next.attachmentId },
+            }),
+          );
+
+          if (reply.relativeUrl === undefined) return refuse("T3 did not return an asset URL");
+
+          // T3's own web client puts this signed URL in an `<img>`; the bearer token never leaves main.
+          return { ok: true, url: new URL(reply.relativeUrl, server.origin).toString() };
+        }
+
+        case "releaseAttachment":
+          // T3 deletes a pending upload when its composer drops it; a sent one is the thread's.
+          await withRpc((connection) => connection.command("attachments.delete", { attachmentId: next.attachmentId }));
+
+          return { ok: true };
       }
 
       const thread = target;
@@ -847,7 +923,7 @@ export function startPanel(options: PanelOptions): Panel {
           return { ok: true };
         case "forceStop": {
           // T3 hides Force stop without this capability, and an older server has no such route.
-          if (!options.server.threadForceStop) return refuse("This T3 server cannot force stop a run");
+          if (!server.threadForceStop) return refuse("This T3 server cannot force stop a run");
 
           const result = await rpc.request<WireForceStopResult>("orchestration.forceStopThread", {
             threadId: thread.threadId,
@@ -921,6 +997,28 @@ export function startPanel(options: PanelOptions): Panel {
           await pushSnapshot();
 
           return { ok: true };
+        case "implementPlan": {
+          // T3 leaves plan mode for the implementing turn (apps/web/src/hooks/useHandleNewThread.ts,
+          // persistThreadSettingsForNextTurn writes the mode before the message).
+          if (view?.thread.interactionMode === "plan") {
+            await dispatch({ type: "thread.interaction-mode.set", threadId: thread.threadId, interactionMode: "default" });
+          }
+
+          await dispatch({
+            type: "message.dispatch",
+            threadId: thread.threadId,
+            messageId: randomUUID(),
+            text: PLAN_IMPLEMENTATION_PROMPT,
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            dispatchMode: { type: "start_immediately" },
+            sourcePlanRef: { threadId: thread.threadId, planId: next.planId },
+          });
+          await pushSnapshot();
+
+          return { ok: true };
+        }
         case "respond":
           await dispatch({
             type: "runtime-request.respond",
@@ -947,7 +1045,7 @@ export function startPanel(options: PanelOptions): Panel {
             itemId: next.itemId,
           });
 
-          const item = trimItem(result.item);
+          const item = trimItem(result.item, true);
 
           return item === null ? { ok: false, error: "T3 has no such turn item" } : { ok: true, item };
         }
@@ -985,7 +1083,7 @@ function sameTarget(a: ThreadRef | null, b: ThreadRef | null): boolean {
 // ---------------------------------------------------------------- trimming
 
 /** A turn item with only the fields the panel draws, or null when T3 sent no usable item. */
-export function trimItem(raw: WireItem | undefined): PanelItem | null {
+export function trimItem(raw: WireItem | undefined, completeOutput = false): PanelItem | null {
   if (raw?.id === undefined || raw.type === undefined) return null;
 
   const trimmed: PanelItem = {
@@ -1010,6 +1108,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       break;
     case "proposed_plan":
       trimmed.markdown = raw.markdown;
+      trimmed.planId = raw.planId;
       break;
     case "todo_list":
       trimmed.steps = trimSteps(raw.steps);
@@ -1019,7 +1118,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       // (OrchestrationV2CommandExecutionTurnItem); the union exists for the dynamic tool branch.
       const command = raw as WireCommandItem;
       trimmed.input = command.input;
-      trimmed.output = trimText(command.output);
+      trimmed.output = trimText(command.output, completeOutput);
       trimmed.outputOmitted = command.outputOmitted === true || trimmed.output !== command.output;
       trimmed.exitCode = raw.exitCode;
       trimmed.outputIndicatesFailure = raw.outputIndicatesFailure;
@@ -1034,7 +1133,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       trimmed.toolInput = tool.input === undefined ? undefined : JSON.stringify(tool.input, null, 2);
       // A tool's output is arbitrary JSON on this build (delegation answers are objects).
       const output = tool.output === undefined ? undefined : JSON.stringify(tool.output, null, 2);
-      trimmed.output = trimText(output);
+      trimmed.output = trimText(output, completeOutput);
       trimmed.outputOmitted = tool.outputOmitted === true || trimmed.output !== output;
       break;
     }
@@ -1112,8 +1211,8 @@ function copyCommon(raw: WireItem, trimmed: PanelItem) {
 }
 
 /** Tool output over the limit is fetched per row from `getTurnItem`, which carries the full body. */
-function trimText(text: string | undefined): string | undefined {
-  if (text === undefined || text.length <= OUTPUT_LIMIT) return text;
+function trimText(text: string | undefined, complete = false): string | undefined {
+  if (complete || text === undefined || text.length <= OUTPUT_LIMIT) return text;
 
   return `${text.slice(0, OUTPUT_LIMIT)}\n…`;
 }
@@ -1293,6 +1392,12 @@ export function trimView(
     return ref === null ? [] : [ref];
   });
 
+  const plans = (raw.plans ?? []).flatMap((plan) => {
+    const trimmed = trimPlan(plan);
+
+    return trimmed === null ? [] : [trimmed];
+  });
+
   return {
     thread: {
       id: thread.id,
@@ -1308,6 +1413,7 @@ export function trimView(
     rows,
     items,
     queued,
+    plans,
     attachmentUploads,
     voiceTranscription,
     threadForceStop,
@@ -1316,6 +1422,10 @@ export function trimView(
     modelTraits: true,
     // Its composer asks this socket for the provider's commands and the project's files, as T3's does.
     composerMenus: true,
+    // A plan this thread proposed can be sent back through this socket with T3's plan reference.
+    planImplementation: true,
+    // Its images are minted through this socket as T3's own web client mints them.
+    imagePreviews: true,
   };
 }
 
@@ -1327,6 +1437,13 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
     const item = trimItem(payload);
 
     return item === null ? {} : { item };
+  }
+
+  // The plan artifact itself is the payload, so its status (completed once implemented) rides here.
+  if (type === "plan.updated") {
+    const plan = trimPlan(payload);
+
+    return plan === null ? {} : { plan };
   }
 
   const trimmed: PanelEventPayload = {};
@@ -1355,6 +1472,13 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
   if (payload.interactionMode !== undefined) trimmed.interactionMode = payload.interactionMode;
 
   return trimmed;
+}
+
+/** One plan of a thread, or null when the artifact names no id: a row cannot implement it. */
+function trimPlan(raw: WirePlan | undefined): PanelPlan | null {
+  if (raw?.id === undefined) return null;
+
+  return { id: raw.id, kind: raw.kind ?? "", status: raw.status ?? "" };
 }
 
 /**

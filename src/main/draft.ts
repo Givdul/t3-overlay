@@ -7,7 +7,7 @@ import type {
   PanelModelSelection,
   PanelProject,
 } from "../shared/panel";
-import { defaultModelSelection, type WireServerConfig } from "./panel";
+import { defaultModelSelection, trimModelSelection, type WireServerConfig } from "./panel";
 import { AuthExpiredError, connect } from "./rpc";
 import type { ShellProject } from "./shell";
 import type { T3Server } from "./t3";
@@ -36,13 +36,21 @@ export interface DraftSource {
 function draftProjects(source: DraftSource, config: WireServerConfig | undefined): PanelProject[] {
   const serverMode = config?.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE;
   const overrides = config?.settings?.projectSettingsOverrides ?? {};
+  const folded = config?.settings?.projectSettingsFolded === true;
+  const serverModel = trimModelSelection(config?.settings?.defaultModelSelection);
 
   const projects = source.projects.map((project) => ({
     projectId: project.projectId,
     title: project.title,
     icon: project.icon,
     scratch: config?.scratchWorkspaceRoot !== undefined && sameRoot(project.workspaceRoot, config.scratchWorkspaceRoot),
-    defaultModelSelection: project.defaultModelSelection,
+    // Stored project settings lead the project's legacy field, and both lead the server's own default;
+    // once folded, only the stored overrides exist (apps/web/src/hooks/useHandleNewThread.ts →
+    // resolveProjectSettings).
+    defaultModelSelection:
+      trimModelSelection(overrides[project.projectId]?.defaultModelSelection) ??
+      (folded ? null : project.defaultModelSelection) ??
+      serverModel,
     // A project's own default leads, as its web draft reads it (apps/web/src/hooks/useHandleNewThread.ts).
     defaultRuntimeMode: overrides[project.projectId]?.defaultRuntimeMode ?? serverMode,
   }));
