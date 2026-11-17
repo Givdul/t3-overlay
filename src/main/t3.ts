@@ -4,6 +4,8 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
+import { readAttachmentUploads, type AttachmentCapabilities } from "../shared/attachments";
+import type { PanelAttachmentUploads } from "../shared/panel";
 import { GRANT_CLIENT_NAME } from "./mcpAuth";
 
 const T3_HOME = join(homedir(), ".t3");
@@ -14,6 +16,14 @@ export interface T3Server {
   serverVersion: string;
   /** The environment this server is, as threads on it name it. */
   environmentId: string;
+  /** T3's attachment-upload capability; null when it advertises none, and the panel hides its attach control. */
+  attachmentUploads: PanelAttachmentUploads | null;
+  /** T3's own speech-to-text capability; false and the panel hides its mic. */
+  voiceTranscription: boolean;
+  /** T3 answers `orchestration.forceStopThread` (packages/contracts/src/environment.ts, `threadForceStop`). */
+  threadForceStop: boolean;
+  /** T3 streams a running command's output (packages/contracts/src/environment.ts, `commandOutputStreaming`). */
+  commandOutputStreaming: boolean;
 }
 
 /** Whether `pid` is a running process this user may signal. Another user's process counts as not running. */
@@ -36,12 +46,33 @@ export async function readServer(): Promise<T3Server | null> {
     // The file outlives the server. Without a live server process, whatever answers on its old port
     // would receive the session token.
     if (!isAlive(raw.pid)) return null;
-    const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
-    if (!response.ok) return null;
-    // SAFETY: T3's environment descriptor always names its environmentId.
-    const { environmentId } = (await response.json()) as { environmentId: string };
 
-    return { origin: raw.origin, port: raw.port, serverVersion: raw.serverVersion, environmentId };
+    const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
+
+    if (!response.ok) return null;
+
+    // SAFETY: T3's environment descriptor always names its environmentId (packages/contracts/src/environment.ts).
+    const descriptor = (await response.json()) as {
+      environmentId: string;
+      capabilities?: AttachmentCapabilities & {
+        voiceTranscription?: boolean;
+        threadForceStop?: boolean;
+        commandOutputStreaming?: boolean;
+      };
+    };
+
+    const attachmentUploads = readAttachmentUploads(descriptor.capabilities);
+
+    return {
+      origin: raw.origin,
+      port: raw.port,
+      serverVersion: raw.serverVersion,
+      environmentId: descriptor.environmentId,
+      attachmentUploads,
+      voiceTranscription: descriptor.capabilities?.voiceTranscription === true,
+      threadForceStop: descriptor.capabilities?.threadForceStop === true,
+      commandOutputStreaming: descriptor.capabilities?.commandOutputStreaming === true,
+    };
   } catch {
     return null;
   }

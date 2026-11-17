@@ -1,24 +1,40 @@
 import { randomUUID } from "node:crypto";
 import type {
+  PanelApprovalDecision,
+  PanelApprovalOption,
+  PanelAttachment,
+  PanelAttachmentReply,
+  PanelAttachmentUploads,
   PanelAttempt,
-  PanelCommand,
+  PanelCommandOutput,
   PanelEventPayload,
   PanelFileChange,
+  PanelForceStopReply,
   PanelItem,
   PanelItemRef,
   PanelItemReply,
   PanelMessage,
+  PanelMessageContext,
+  PanelModel,
+  PanelModelProvider,
+  PanelModelSelection,
+  PanelModelsReply,
   PanelQuestion,
   PanelQueuedMessage,
   PanelReply,
   PanelRun,
   PanelRuntimeRequest,
+  PanelThreadCommand,
   PanelTodoStep,
   PanelView,
+  PanelVoiceReply,
 } from "../shared/panel";
 import type { ThreadRef } from "../shared/types";
+import { attachmentLimit, attachmentTooLargeMessage, isImageAttachment } from "../shared/attachments";
+import { createBackoff, STABLE_AFTER_MS } from "./backoff";
 import { AuthExpiredError, commandFrame, connect, type T3Rpc, type ThreadCommand, type WirePayload } from "./rpc";
 import type { T3Server } from "./t3";
+import { transcribePcm, voiceStatus } from "./voice";
 
 // One thread's projection, trimmed for the panel. Main owns the socket (the token lives here) and
 // forwards snapshots and events; the renderer keeps the timeline and draws it.
@@ -56,6 +72,21 @@ interface WireQuestion {
   initialAnswer?: string;
 }
 
+interface WireAttachment {
+  id?: string;
+  type?: string;
+  name?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+/** One approval decision T3 offers (packages/contracts/src/providerPolicy.ts, ProviderApprovalOption). */
+interface WireApprovalOption {
+  decision?: string;
+  label?: string;
+  warning?: string;
+}
+
 interface WireItem {
   id?: string;
   type?: string;
@@ -68,6 +99,7 @@ interface WireItem {
   completedAt?: string;
   title?: string;
   text?: string;
+  attachments?: WireAttachment[];
   streaming?: boolean;
   markdown?: string;
   steps?: WireTodoStep[];
@@ -96,6 +128,10 @@ interface WireItem {
   requestId?: string;
   requestKind?: string;
   reason?: string;
+  /** An approval request's decisions, when the provider names them. */
+  options?: WireApprovalOption[];
+  /** Set once a provider did not confirm Stop, so the panel can offer Force stop. */
+  unresponsiveAt?: string;
   questions?: WireQuestion[];
   responseMode?: string;
 }
@@ -113,12 +149,22 @@ interface WireDynamicToolItem extends WireItem {
 interface WireMessage {
   id?: string;
   text?: string;
+  attachments?: WireAttachment[];
+  context?: PanelMessageContext;
+}
+
+/** A thread's model (packages/contracts/src/modelSelection.ts); `provider` is the older spelling of `instanceId`. */
+interface WireModelSelection {
+  instanceId?: string;
+  provider?: string;
+  model?: string;
 }
 
 interface WireThread {
   id?: string;
   projectId?: string;
   title?: string;
+  modelSelection?: WireModelSelection;
 }
 
 interface WireRun {
@@ -169,14 +215,74 @@ interface WireEventPayload extends WireItem {
   kind?: string;
   rootNodeId?: string;
   responseCapability?: { type?: string };
+  modelSelection?: WireModelSelection;
 }
 
 interface WireTurnItemReply {
   item?: WireItem;
 }
 
-/** The reply shapes this connection asks for: a projection and a turn item. */
-type WireReply = WireProjection | WireTurnItemReply;
+/** One frame of a running command's output (packages/contracts/src/orchestrationV2.ts, OrchestrationV2CommandOutputFrame). */
+interface WireCommandOutputFrame {
+  kind?: string;
+  text?: string;
+  /** Earlier output was dropped to keep the tail bounded. */
+  truncated?: boolean;
+  running?: boolean;
+}
+
+/** `attachments.createUploadUrl` mints one signed slot to POST a file's bytes to. */
+interface WireUploadReply {
+  attachmentId?: string;
+  relativeUrl?: string;
+  expiresAt?: number;
+}
+
+/** One model a provider offers (packages/contracts/src/server.ts, ServerProviderModel). */
+interface WireProviderModel {
+  slug?: string;
+  name?: string;
+  shortName?: string;
+  subProvider?: string;
+  badge?: string;
+  isCustom?: boolean;
+  isLegacy?: boolean;
+  isDefault?: boolean;
+}
+
+/** A provider and its models (packages/contracts/src/server.ts, ServerProvider). */
+interface WireProvider {
+  instanceId?: string;
+  driver?: string;
+  displayName?: string;
+  enabled?: boolean;
+  /** "ready" once the provider can run a model here. */
+  status?: string;
+  /** "unavailable" when this machine cannot run the provider at all. */
+  availability?: string;
+  models?: WireProviderModel[];
+}
+
+/** The slice of `server.getConfig` the composer's model picker and the new-thread draft read (packages/contracts/src/server.ts). */
+export interface WireServerConfig {
+  providers?: WireProvider[];
+  /** T3's own default model, runtime mode and scratch checkout for a new thread. */
+  settings?: {
+    providerModelPreferences?: Record<string, { hiddenModels?: string[] }>;
+    defaultModelSelection?: WireModelSelection | null;
+    defaultRuntimeMode?: string;
+  };
+  scratchWorkspaceRoot?: string;
+}
+
+/** `orchestration.forceStopThread`'s answer (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ForceStopThreadResult). */
+interface WireForceStopResult {
+  outcome?: string;
+  sharedWithThreadIds?: string[];
+}
+
+/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, the provider catalog and a force stop. */
+type WireReply = WireProjection | WireTurnItemReply | WireUploadReply | WireServerConfig | WireForceStopResult;
 
 export interface PanelOptions {
   server: T3Server;
@@ -190,7 +296,7 @@ export interface PanelOptions {
 export interface Panel {
   /** Starts or stops the subscription. The same target twice keeps the live one. */
   setTarget(target: ThreadRef | null): void;
-  command(command: PanelCommand): Promise<PanelReply | PanelItemReply>;
+  command(command: PanelThreadCommand): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply>;
   stop(): void;
 }
 
@@ -202,15 +308,22 @@ const STALE_DELAY_MS = 500;
 
 export function startPanel(options: PanelOptions): Panel {
   let target: ThreadRef | null = null;
-  let rpc: T3Rpc<WireStreamItem, WireReply> | null = null;
+  let rpc: T3Rpc<WireReply> | null = null;
   let stopStream: (() => void) | null = null;
   /** The last sequence main forwarded: a resubscribe resumes after it. */
   let lastSequence = 0;
+  /** Live output of the expanded running command rows, by turn item id, on this thread's socket. */
+  const commandOutputs = new Map<string, () => void>();
   /** Bumped by every (re)subscribe and by stopping, so a late socket can recognise itself as stale. */
   let generation = 0;
   /** The open thread's trimmed projection: the queued row and the run list the composer reads. */
   let view: PanelView | null = null;
   let staleTimer: NodeJS.Timeout | null = null;
+  /** A dropped socket reconnects here; a new target or a close cancels it. */
+  let retryTimer: NodeJS.Timeout | null = null;
+  const backoff = createBackoff();
+  /** When this socket came up, so one that stayed up long enough resets the ladder. */
+  let connectedAt: number | null = null;
 
   function setTarget(next: ThreadRef | null) {
     if (sameTarget(next, target)) return;
@@ -231,11 +344,82 @@ export function startPanel(options: PanelOptions): Panel {
     generation += 1;
     stopStream?.();
     stopStream = null;
+    stopCommandOutputs();
     rpc?.close();
     rpc = null;
+    connectedAt = null;
 
     if (staleTimer !== null) clearTimeout(staleTimer);
     staleTimer = null;
+
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
+  /** Ends every live command-output stream; a collapsed row or a thread switch means none is wanted. */
+  function stopCommandOutputs() {
+    for (const stop of commandOutputs.values()) stop();
+
+    commandOutputs.clear();
+  }
+
+  /**
+   * One expanded running row's output. T3's hub sends a bounded tail (`replace`) and then appends, and ends
+   * the stream itself when the command settles (apps/server/src/orchestration-v2/CommandOutputHub.ts).
+   */
+  function watchCommandOutput(threadId: string, itemId: string): PanelReply {
+    if (rpc === null) return refuse("T3 is not connected");
+
+    // T3's own clients read the same capability; an older server has no such route.
+    if (!options.server.commandOutputStreaming) return refuse("This T3 server does not stream command output");
+
+    if (commandOutputs.has(itemId)) return { ok: true };
+
+    const stop = rpc.stream<WireCommandOutputFrame>(
+      "orchestration.subscribeCommandOutput",
+      { threadId, itemId },
+      {
+        onValue: (frame) => options.onMessage({ kind: "commandOutput", threadId, itemId, frame: trimCommandOutput(frame) }),
+        onClose: () => {
+          if (commandOutputs.get(itemId) === stop) commandOutputs.delete(itemId);
+        },
+      },
+    );
+
+    commandOutputs.set(itemId, stop);
+
+    return { ok: true };
+  }
+
+  /** The row collapsed, or the command finished: ends its stream on T3's side too. */
+  function closeCommandOutput(itemId: string): PanelReply {
+    const stop = commandOutputs.get(itemId);
+
+    if (stop !== undefined) {
+      commandOutputs.delete(itemId);
+      stop();
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Reopens the thread's stream on the shared ladder, resuming after the last sequence it forwarded.
+   * The panel keeps the rows it has meanwhile, and shows itself as connecting until T3 says live.
+   */
+  function reconnect(threadId: string) {
+    if (retryTimer !== null) return;
+
+    if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) backoff.reset();
+
+    connectedAt = null;
+    const delay = backoff.nextDelay();
+    console.warn(`[panel] reconnecting in ${delay}ms after ${threadId}`);
+    options.onMessage({ kind: "status", status: "connecting" });
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void subscribe(threadId);
+    }, delay);
   }
 
   async function subscribe(threadId: string) {
@@ -243,16 +427,23 @@ export function startPanel(options: PanelOptions): Panel {
     generation = current;
     options.onMessage({ kind: "status", status: "connecting" });
 
-    let connection: T3Rpc<WireStreamItem, WireReply>;
+    let connection: T3Rpc<WireReply>;
 
     try {
-      connection = await connect<WireStreamItem, WireReply>(options.server, options.token);
+      connection = await connect<WireReply>(options.server, options.token);
     } catch (error) {
       if (current !== generation) return;
 
-      if (error instanceof AuthExpiredError) options.onAuthExpired();
+      // A rejected token cannot succeed on retry: a new one re-mints and restarts the panel.
+      if (error instanceof AuthExpiredError) {
+        options.onAuthExpired();
+        options.onMessage({ kind: "status", status: "ended", reason: error.message });
 
-      options.onMessage({ kind: "status", status: "ended", reason: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+
+      console.warn("[panel] connect failed:", error);
+      reconnect(threadId);
 
       return;
     }
@@ -264,11 +455,12 @@ export function startPanel(options: PanelOptions): Panel {
     }
 
     rpc = connection;
+    connectedAt = Date.now();
     const payload: WirePayload = { threadId, requestCompletionMarker: true };
 
     if (lastSequence > 0) payload.afterSequence = lastSequence;
 
-    stopStream = connection.stream("orchestration.subscribeThread", payload, {
+    stopStream = connection.stream<WireStreamItem>("orchestration.subscribeThread", payload, {
       onValue: (value) => {
         if (current === generation) onStreamValue(threadId, value);
       },
@@ -278,7 +470,7 @@ export function startPanel(options: PanelOptions): Panel {
         stopStream = null;
         rpc = null;
         console.warn("[panel] thread stream closed:", reason);
-        options.onMessage({ kind: "status", status: "ended", reason });
+        reconnect(threadId);
       },
     });
   }
@@ -286,7 +478,13 @@ export function startPanel(options: PanelOptions): Panel {
   function onStreamValue(threadId: string, item: WireStreamItem) {
     switch (item.kind) {
       case "snapshot": {
-        const next = trimView(item.projection);
+        const next = trimView(
+          item.projection,
+          options.server.attachmentUploads,
+          options.server.voiceTranscription,
+          options.server.threadForceStop,
+          options.server.commandOutputStreaming,
+        );
 
         if (next === null) return;
         view = next;
@@ -326,7 +524,14 @@ export function startPanel(options: PanelOptions): Panel {
 
     try {
       const projection = await rpc.request<WireProjection>("orchestration.getThreadProjection", { threadId: thread.threadId });
-      const next = trimView(projection);
+
+      const next = trimView(
+        projection,
+        options.server.attachmentUploads,
+        options.server.voiceTranscription,
+        options.server.threadForceStop,
+        options.server.commandOutputStreaming,
+      );
       // The reader may have switched threads while this read was in flight.
       const current = target;
 
@@ -358,26 +563,110 @@ export function startPanel(options: PanelOptions): Panel {
     await rpc.command("orchestration.dispatchCommand", commandFrame(command));
   }
 
-  async function command(next: PanelCommand): Promise<PanelReply | PanelItemReply> {
-    const thread = target;
+  /**
+   * Runs `use` on the open thread's socket, or on a short-lived one when no thread is open: the draft
+   * composer uploads its files and reads the model list before there is a thread to read them from.
+   */
+  async function withRpc<T>(use: (connection: T3Rpc<WireReply>) => Promise<T>): Promise<T> {
+    if (rpc !== null) return use(rpc);
 
-    if (thread === null) return refuse("No thread is open");
-
-    if (next.type !== "send" && rpc === null) return refuse("T3 is not connected");
+    const connection = await connect<WireReply>(options.server, options.token);
 
     try {
+      return await use(connection);
+    } finally {
+      connection.close();
+    }
+  }
+
+  async function command(
+    next: PanelThreadCommand,
+  ): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply> {
+    try {
+      // The draft composer's commands: the server answers them before any thread exists.
+      switch (next.type) {
+        // Voice is plain HTTP to the same server, so a reconnecting thread socket does not stop it.
+        case "voiceStatus":
+          return await voiceStatus(options.server, options.token);
+        case "transcribe":
+          // The audio crosses the IPC boundary as an ArrayBuffer; anything else has no samples to send.
+          if (!(next.pcm instanceof ArrayBuffer)) return refuse("That recording could not be read");
+
+          return await transcribePcm(options.server, options.token, next.pcm);
+        case "models":
+          return {
+            ok: true,
+            providers: trimModels(await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}))),
+          };
+        case "attach": {
+          const capability = options.server.attachmentUploads;
+
+          if (capability === null) return refuse("This T3 server does not accept attachments");
+
+          // The bytes cross the IPC boundary as an ArrayBuffer; anything else is not a file's content.
+          if (!(next.data instanceof ArrayBuffer)) return refuse("That file could not be read");
+
+          const mimeType = next.mimeType.toLowerCase().slice(0, 100) || "application/octet-stream";
+          const name = next.name.trim().slice(0, 255) || (isImageAttachment(mimeType) ? "image" : "file");
+          const data = new Uint8Array(next.data);
+          const limit = attachmentLimit(capability.maxUploadBytes, mimeType);
+
+          // Checked here too, not only in the composer: the descriptor's limit is what T3 enforces.
+          if (data.byteLength === 0) return refuse("That file is empty");
+
+          if (data.byteLength > limit) return refuse(attachmentTooLargeMessage(name, limit));
+
+          const isImage = isImageAttachment(mimeType);
+          const upload: WirePayload = { name, mimeType, sizeBytes: data.byteLength };
+
+          // An image is `createUploadUrl`'s default; a file has to say so.
+          if (!isImage) upload.type = "file";
+
+          const minted = await withRpc((connection) => connection.request<WireUploadReply>("attachments.createUploadUrl", upload));
+
+          if (minted.attachmentId === undefined || minted.relativeUrl === undefined) {
+            return refuse("T3 did not mint an upload slot");
+          }
+
+          const uploaded = await fetch(new URL(minted.relativeUrl, options.server.origin), {
+            method: "POST",
+            headers: { "content-type": mimeType },
+            body: data,
+          });
+
+          if (!uploaded.ok) return refuse(`T3 refused the upload (${uploaded.status})`);
+
+          const attachment: PanelAttachment = {
+            id: minted.attachmentId,
+            type: isImage ? "image" : "file",
+            name,
+            mimeType,
+            sizeBytes: data.byteLength,
+          };
+
+          return { ok: true, attachment };
+        }
+      }
+
+      const thread = target;
+
+      if (thread === null) return refuse("No thread is open");
+
+      if (rpc === null) return refuse("T3 is not connected");
+
       switch (next.type) {
         case "send": {
           const text = next.text.trim();
+          const attachments = next.attachments;
 
-          if (text === "") return refuse("Write a message first");
+          if (text === "" && attachments.length === 0) return refuse("Write a message first");
 
           await dispatch({
             type: "message.dispatch",
             threadId: thread.threadId,
             messageId: randomUUID(),
             text,
-            attachments: [],
+            attachments,
             createdBy: "user",
             creationSource: "web",
             dispatchMode: { type: next.queue ? "queue_after_active" : "start_immediately" },
@@ -389,7 +678,62 @@ export function startPanel(options: PanelOptions): Panel {
         }
 
         case "stop":
-          await dispatch({ type: "run.interrupt", threadId: thread.threadId, runId: next.runId });
+          // T3's own Stop (packages/client-runtime/src/operations/commands.ts, stopThread): it ends the
+          // thread's turn and its delegated work, and only this path can go unresponsive into Force stop.
+          await dispatch({ type: "thread.stop", threadId: thread.threadId });
+
+          return { ok: true };
+        case "forceStop": {
+          // T3 hides Force stop without this capability, and an older server has no such route.
+          if (!options.server.threadForceStop) return refuse("This T3 server cannot force stop a run");
+
+          const result = await rpc.request<WireForceStopResult>("orchestration.forceStopThread", {
+            threadId: thread.threadId,
+            runId: next.runId,
+          });
+
+          await pushSnapshot();
+
+          return { ok: true, outcome: result.outcome ?? "", sharedWithThreadIds: (result.sharedWithThreadIds ?? []).filter(Boolean) };
+        }
+
+        case "cancelQueued":
+          await dispatch({ type: "queued-run.cancel", threadId: thread.threadId, runId: next.runId });
+          // A cancelled queued run keeps no turn item; re-read so its row leaves at once.
+          await pushSnapshot();
+
+          return { ok: true };
+        case "subscribeCommandOutput":
+          return watchCommandOutput(thread.threadId, next.itemId);
+        case "unsubscribeCommandOutput":
+          return closeCommandOutput(next.itemId);
+        case "editQueued": {
+          const edit: Extract<ThreadCommand, { type: "queued-run.edit" }> = {
+            type: "queued-run.edit",
+            threadId: thread.threadId,
+            runId: next.runId,
+            text: next.text,
+            attachments: next.attachments,
+          };
+
+          // The panel does not compose references, so the message's own context rides along unchanged.
+          if (next.context !== undefined) edit.context = next.context;
+
+          await dispatch(edit);
+          // The message store holds the queued text; re-read so the row shows the new words.
+          await pushSnapshot();
+
+          return { ok: true };
+        }
+
+        case "setModel":
+          await dispatch({
+            type: "thread.model-selection.set",
+            threadId: thread.threadId,
+            modelSelection: { instanceId: next.instanceId, model: next.model },
+          });
+          // The next turn reads the thread's selection: re-read it so the composer shows the new model.
+          await pushSnapshot();
 
           return { ok: true };
         case "respond":
@@ -413,8 +757,6 @@ export function startPanel(options: PanelOptions): Panel {
 
           return { ok: true };
         case "turnItem": {
-          if (rpc === null) return refuse("T3 is not connected");
-
           const result = await rpc.request<WireTurnItemReply>("orchestration.getTurnItem", {
             threadId: thread.threadId,
             itemId: next.itemId,
@@ -426,6 +768,14 @@ export function startPanel(options: PanelOptions): Panel {
         }
       }
     } catch (error) {
+      // A 401 from any request is the same expired session the socket reports (voice routes included):
+      // re-mint one instead of only telling the reader it failed.
+      if (error instanceof AuthExpiredError) {
+        options.onAuthExpired();
+
+        return refuse(error.message);
+      }
+
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -466,6 +816,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
   switch (raw.type) {
     case "user_message":
       trimmed.text = raw.text;
+      trimmed.attachments = trimAttachments(raw.attachments);
       break;
     case "assistant_message":
     case "reasoning":
@@ -529,6 +880,8 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
     case "run_interrupt_request":
     case "run_interrupt_result":
       trimmed.message = raw.message;
+      // T3 offers Force stop only on a request whose provider never confirmed Stop.
+      trimmed.unresponsiveAt = raw.unresponsiveAt;
       break;
     case "compaction":
       trimmed.summary = raw.summary;
@@ -546,6 +899,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       trimmed.requestKind = raw.requestKind;
       trimmed.prompt = raw.prompt;
       trimmed.reason = raw.reason;
+      trimmed.options = trimApprovalOptions(raw.options);
       break;
     case "user_input_request":
       trimmed.requestId = raw.requestId;
@@ -585,6 +939,29 @@ function trimSteps(steps: WireTodoStep[] | undefined): PanelTodoStep[] | undefin
   return steps.map((step) => ({ id: step.id, text: step.text, status: step.status }));
 }
 
+/** Only a well-formed record renders; a nightly's extra attachment kind keeps its common fields. */
+function trimAttachments(attachments: WireAttachment[] | undefined): PanelAttachment[] | undefined {
+  if (attachments === undefined) return undefined;
+
+  return attachments.flatMap((attachment) =>
+    attachment.id === undefined ||
+    attachment.type === undefined ||
+    attachment.name === undefined ||
+    attachment.mimeType === undefined ||
+    attachment.sizeBytes === undefined
+      ? []
+      : [
+          {
+            id: attachment.id,
+            type: attachment.type,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
+        ],
+  );
+}
+
 function trimChanges(changes: WireFileChange[] | undefined): PanelFileChange[] | undefined {
   if (changes === undefined) return undefined;
 
@@ -594,6 +971,22 @@ function trimChanges(changes: WireFileChange[] | undefined): PanelFileChange[] |
     additions: change.additions,
     deletions: change.deletions,
   }));
+}
+
+function trimApprovalOptions(options: WireApprovalOption[] | undefined): PanelApprovalOption[] | undefined {
+  if (options === undefined) return undefined;
+
+  // A decision without its label has no button; one this build cannot send is T3's to offer.
+  return options.flatMap((option) =>
+    option.decision === undefined || option.label === undefined || !isApprovalDecision(option.decision)
+      ? []
+      : [{ decision: option.decision, label: option.label, warning: option.warning }],
+  );
+}
+
+/** T3's approval decisions (packages/contracts/src/providerPolicy.ts, ProviderApprovalDecision). */
+function isApprovalDecision(value: string): value is PanelApprovalDecision {
+  return value === "accept" || value === "acceptForSession" || value === "acceptAlways" || value === "decline" || value === "cancel";
 }
 
 function trimQuestions(questions: WireQuestion[] | undefined): PanelQuestion[] | undefined {
@@ -630,8 +1023,24 @@ function itemRef(raw: WireItem): PanelItemRef | null {
   return ref;
 }
 
-/** One thread projection reduced to what the panel draws. */
-export function trimView(raw: WireProjection | undefined): PanelView | null {
+/** A thread projection's streaming frame, reduced to what the row draws; an unknown kind reads as more text. */
+function trimCommandOutput(raw: WireCommandOutputFrame): PanelCommandOutput {
+  return {
+    kind: raw.kind === "replace" ? "replace" : "append",
+    text: raw.text ?? "",
+    truncated: raw.truncated === true,
+    running: raw.running === true,
+  };
+}
+
+/** The thread projection reduced to what the panel draws. The server's speech capability rides along, as its upload one does. */
+export function trimView(
+  raw: WireProjection | undefined,
+  attachmentUploads: PanelAttachmentUploads | null,
+  voiceTranscription: boolean,
+  threadForceStop: boolean,
+  commandOutputStreaming: boolean,
+): PanelView | null {
   if (raw === undefined) return null;
   const thread = raw.thread;
 
@@ -671,7 +1080,18 @@ export function trimView(raw: WireProjection | undefined): PanelView | null {
 
     if (message?.text === undefined) return [];
 
-    return [{ id: run.userMessageId, runId: run.id, text: message.text, position: run.queuePosition ?? 0 }];
+    const queuedMessage: PanelQueuedMessage = {
+      id: run.userMessageId,
+      runId: run.id,
+      text: message.text,
+      attachments: trimAttachments(message.attachments) ?? [],
+      position: run.queuePosition ?? 0,
+    };
+
+    // An edit must keep the references T3 Code put on the message, so they travel whole.
+    if (message.context !== undefined) queuedMessage.context = message.context;
+
+    return [queuedMessage];
   });
 
   queued.sort((left, right) => left.position - right.position);
@@ -689,13 +1109,17 @@ export function trimView(raw: WireProjection | undefined): PanelView | null {
   });
 
   return {
-    thread: { id: thread.id, projectId: thread.projectId, title: thread.title ?? "" },
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title ?? "", modelSelection: trimModelSelection(thread.modelSelection) },
     runs,
     attempts,
     runtimeRequests,
     rows,
     items,
     queued,
+    attachmentUploads,
+    voiceTranscription,
+    threadForceStop,
+    commandOutputStreaming,
   };
 }
 
@@ -725,5 +1149,81 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
 
   if (payload.title !== undefined) trimmed.title = payload.title;
 
+  const modelSelection = trimModelSelection(payload.modelSelection);
+
+  if (modelSelection !== null) trimmed.modelSelection = modelSelection;
+
   return trimmed;
+}
+
+/** A thread's model, or null when the nightly names none: the composer then hides its picker. */
+export function trimModelSelection(raw: WireModelSelection | null | undefined): PanelModelSelection | null {
+  const instanceId = raw?.instanceId ?? raw?.provider;
+
+  if (instanceId === undefined || raw?.model === undefined) return null;
+
+  return { instanceId, model: raw.model };
+}
+
+/**
+ * The providers a thread can switch to and their models. T3's picker offers a provider only while it is
+ * on and ready, and hides the models the user hid (apps/web/src/providerInstances.ts,
+ * apps/web/src/modelSelection.ts); custom models stay selectable, as they do there.
+ */
+export function trimModels(config: WireServerConfig | undefined): PanelModelProvider[] {
+  const preferences = config?.settings?.providerModelPreferences ?? {};
+
+  return (config?.providers ?? []).flatMap((provider) => {
+    const instanceId = provider.instanceId;
+
+    if (instanceId === undefined) return [];
+
+    if (provider.enabled !== true || provider.status !== "ready" || provider.availability === "unavailable") return [];
+
+    const hidden = new Set(preferences[instanceId]?.hiddenModels ?? []);
+
+    const models = (provider.models ?? []).flatMap((model) => {
+      if (model.slug === undefined || model.name === undefined) return [];
+
+      if (model.isCustom !== true && hidden.has(model.slug)) return [];
+
+      const trimmed: PanelModel = { slug: model.slug, name: model.name };
+
+      if (model.shortName !== undefined) trimmed.shortName = model.shortName;
+
+      if (model.subProvider !== undefined) trimmed.subProvider = model.subProvider;
+
+      if (model.badge !== undefined) trimmed.badge = model.badge;
+
+      if (model.isLegacy === true) trimmed.isLegacy = true;
+
+      if (model.isDefault === true) trimmed.isDefault = true;
+
+      return [trimmed];
+    });
+
+    // A provider with nothing left to pick is no group in the list.
+    if (models.length === 0) return [];
+
+    return [{ instanceId, displayName: provider.displayName ?? provider.driver ?? instanceId, models }];
+  });
+}
+
+/**
+ * The model a new thread starts on: T3's own default from its settings, else the first model of the first
+ * provider it can run, as its web composer resolves one (apps/web/src/providerInstances.ts,
+ * resolveProjectDefaultProviderModelSelection). Null when no provider is ready.
+ */
+export function defaultModelSelection(config: WireServerConfig | undefined): PanelModelSelection | null {
+  const configured = trimModelSelection(config?.settings?.defaultModelSelection);
+
+  if (configured !== null) return configured;
+
+  for (const provider of trimModels(config)) {
+    const model = provider.models.find((candidate) => candidate.isDefault === true) ?? provider.models[0];
+
+    if (model !== undefined) return { instanceId: provider.instanceId, model: model.slug };
+  }
+
+  return null;
 }

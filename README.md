@@ -19,12 +19,22 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 - Read: the thread's title, its markdown and code timeline, running commands as they stream, and its
   status. Every message, command, file change, plan and notice T3's own timeline shows is drawn here.
 - Send: Enter starts a turn, or queues behind the active run while one is going. Shift+Enter is a
-  newline.
-- Stop: the stop button interrupts the active run.
-- Answer: approval and question cards resolve the request in the thread.
+  newline. A queued message can be edited or removed until its turn starts.
+- Attach: paste an image, drop files, or pick them with the paperclip. T3's own size limits apply.
+- Pick the model: the composer footer shows the thread's model and switches it for the next turn.
+- Dictate: the mic records, T3 transcribes it, and the text lands in the composer unsent. It needs a
+  speech model set up in T3 under Settings → Voice.
+- Start a thread: the `+` button opens a draft with a project picker (or No project), the model
+  picker, attachments and dictation. Sending creates the thread in T3 and opens it here.
+- Stop: the stop button stops the active run, and offers **Force stop** when the agent does not
+  respond to it.
+- Answer: approval cards offer T3's own choices (such as accepting for the session), and question
+  cards resolve the request in the thread.
 - Settle and snooze from a thread's right-click menu. Both go through T3's own commands.
-- Open in T3: the title row hands the thread to the T3 Code app (`t3code://threads/...`). The `+`
-  button opens T3's new-thread composer for the newest thread's project.
+- Open in T3: the title row hands the thread to the T3 Code app (`t3code://threads/...`).
+
+Each of these appears only when the connected T3 server advertises it. A dropped connection
+reconnects on its own and picks the thread up where it left off.
 
 The panel keeps the overlay's own look: the chat background opacity, the message-bubble opacity and
 the text outline settings all apply to it.
@@ -73,10 +83,9 @@ revokes its session in T3, which `t3 auth session list` lists as an `mcp-client`
 The panel is a thin client, not T3's page. Some actions are only in T3 Code; the title row's
 **Open in T3** opens the same thread there:
 
-- starting a thread with a picked model or permission mode (the `+` button opens T3's composer),
+- model options such as effort, and a thread's permission mode,
 - `/` slash commands and `@` file mentions,
-- attachments and pasted images,
-- dictation.
+- attachments, model picking, dictation and force stop on another machine's threads.
 
 ## How it connects
 

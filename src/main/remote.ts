@@ -463,7 +463,7 @@ export function startRemote(options: RemoteOptions): Remote {
   function absorb(current: OpenThread, result: WireHistory) {
     const detail = result.thread;
 
-    current.thread = { id: detail.threadId, projectId: detail.projectId, title: detail.title };
+    current.thread = { id: detail.threadId, projectId: detail.projectId, title: detail.title, modelSelection: null };
     current.runs = result.recentRuns.map((run) => ({ id: run.runId, status: run.status }));
     current.activeRunId = detail.activeRunId;
     current.pendingRequestCount = detail.pendingRequestCount;
@@ -519,11 +519,19 @@ export function startRemote(options: RemoteOptions): Remote {
           return { ok: true };
         }
 
-        case "stop":
-          await mcp.callTool("t3_thread_interrupt", { environmentId, threadId, runId: next.runId });
+        case "stop": {
+          // A local panel reads the run from its own projection's queue; a remote read carries the
+          // thread's active run, which T3's interrupt takes.
+          const runId = current.activeRunId;
+
+          if (runId === null) return refuse("This thread is not running");
+
+          await mcp.callTool("t3_thread_interrupt", { environmentId, threadId, runId });
           schedule(0);
 
           return { ok: true };
+        }
+
         case "answer":
           await mcp.callTool("t3_pending_request", {
             environmentId,
@@ -553,6 +561,10 @@ export function startRemote(options: RemoteOptions): Remote {
 
           return item === undefined ? refuse("T3 has no such turn item") : { ok: true, item };
         }
+
+        default:
+          // The rest are the local socket's: T3's /mcp takes a send, a stop and an answer.
+          return refuse("This action is not available on another machine");
       }
     } catch (error) {
       if (error instanceof McpAuthExpiredError) {
@@ -599,7 +611,7 @@ export function startRemote(options: RemoteOptions): Remote {
         ? null
         : {
             target: next,
-            thread: { id: next.threadId, projectId: "", title: "" },
+            thread: { id: next.threadId, projectId: "", title: "", modelSelection: null },
             runs: [],
             rows: [],
             lastPosition: -1,
@@ -693,6 +705,12 @@ function viewOf(current: OpenThread): PanelView {
     rows,
     items: rows.map((row) => refOf(row.item)),
     queued: [],
+    // Another machine's thread is read-only here: T3 alone keeps its queue, uploads, dictation, live
+    // command output and force stop, so the composer draws none of those controls.
+    threadForceStop: false,
+    attachmentUploads: null,
+    voiceTranscription: false,
+    commandOutputStreaming: false,
   };
 }
 

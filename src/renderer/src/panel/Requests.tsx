@@ -1,7 +1,8 @@
-import { CircleAlert, CircleHelp, ExternalLink, LoaderCircle } from "lucide-react";
+import { CircleAlert, CircleHelp, Ellipsis, ExternalLink, LoaderCircle, TriangleAlert } from "lucide-react";
 import { useState } from "react";
-import type { PanelQuestion, PanelRuntimeRequest } from "../../../shared/panel";
+import type { PanelApprovalDecision, PanelApprovalOption, PanelQuestion, PanelRuntimeRequest } from "../../../shared/panel";
 import type { PendingRequests } from "./model";
+import { usePopoverDismiss } from "./usePopoverDismiss";
 
 // A thread waiting on an approval or a question. Answering dispatches T3's own command, so the card
 // disappears on the next `runtime-request.updated` event instead of being hidden locally.
@@ -12,19 +13,39 @@ const card =
 const action =
   "flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] px-2.5 py-1 text-[12px] text-t3-fg hover:bg-t3-accent disabled:cursor-default disabled:opacity-40";
 
+const primaryAction =
+  "flex items-center gap-1.5 rounded-lg border border-transparent bg-[var(--t3-primary)] px-2.5 py-1 text-[12px] text-white hover:bg-[color-mix(in_srgb,var(--t3-primary)_90%,#000)] disabled:cursor-default disabled:opacity-40";
+
+/**
+ * The decisions T3 falls back to when an older approval item names none
+ * (apps/web/src/components/chat/ComposerPendingApprovalActions.tsx, DEFAULT_APPROVAL_OPTIONS).
+ */
+const DEFAULT_APPROVAL_OPTIONS: PanelApprovalOption[] = [
+  { decision: "cancel", label: "Cancel" },
+  { decision: "decline", label: "Decline" },
+  { decision: "acceptForSession", label: "Always allow this session" },
+  { decision: "accept", label: "Approve" },
+];
+
 export function ApprovalCard({
   request,
   openInT3,
 }: {
   request: PendingRequests["approvals"][number];
-  /** Set on another machine, where `/mcp` can list an approval but not answer it. */
+  /** Set for a thread on another machine, where `/mcp` can list an approval but not answer it. */
   openInT3: (() => void) | null;
 }) {
-  const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
+  const [busy, setBusy] = useState<PanelApprovalDecision | null>(null);
+  const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const menu = usePopoverDismiss(more, () => setMore(false));
   const live = request.responseCapability.type === "live";
+  const options = request.options.length > 0 ? request.options : DEFAULT_APPROVAL_OPTIONS;
+  // T3 keeps the two decisions a reader expects inline and the rest under "More".
+  const primaryOptions = options.filter((option) => option.decision === "decline" || option.decision === "accept");
+  const moreOptions = options.filter((option) => !primaryOptions.includes(option));
 
-  async function respond(decision: "accept" | "decline") {
+  async function respond(decision: PanelApprovalDecision) {
     setBusy(decision);
     setError(null);
 
@@ -54,21 +75,101 @@ export function ApprovalCard({
           </button>
         </div>
       ) : live ? (
-        <div className="mt-2 flex items-center gap-2">
-          <button type="button" disabled={busy !== null} className={action} onClick={() => void respond("accept")}>
-            {busy === "accept" && <LoaderCircle size={11} className="animate-spin" />}
-            Approve
-          </button>
-          <button type="button" disabled={busy !== null} className={action} onClick={() => void respond("decline")}>
-            {busy === "decline" && <LoaderCircle size={11} className="animate-spin" />}
-            Deny
-          </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {primaryOptions.map((option) => (
+            <ApprovalOptionButton
+              key={option.decision}
+              option={option}
+              busy={busy === option.decision}
+              disabled={busy !== null}
+              onPick={() => void respond(option.decision)}
+            />
+          ))}
+          {moreOptions.length > 0 && (
+            <div ref={menu} className="relative flex min-w-0">
+              <button
+                type="button"
+                aria-expanded={more}
+                aria-haspopup="menu"
+                aria-label="More approval options"
+                disabled={busy !== null}
+                onClick={() => setMore((value) => !value)}
+                className={action}
+              >
+                <Ellipsis size={12} />
+                More
+              </button>
+              {more && (
+                <div
+                  role="menu"
+                  aria-label="More approval options"
+                  className="absolute bottom-full left-0 z-20 mb-1 w-[220px] overflow-hidden rounded-xl border border-[var(--t3-border)] bg-[var(--t3-popover)] p-1 shadow-xl shadow-black/40"
+                >
+                  {moreOptions.map((option) => (
+                    <button
+                      key={option.decision}
+                      type="button"
+                      role="menuitem"
+                      title={option.warning}
+                      aria-description={option.warning}
+                      disabled={busy !== null}
+                      onClick={() => {
+                        setMore(false);
+                        void respond(option.decision);
+                      }}
+                      className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] text-t3-fg transition-colors hover:bg-t3-accent disabled:opacity-40"
+                    >
+                      {busy === option.decision ? (
+                        <LoaderCircle size={11} className="shrink-0 animate-spin" />
+                      ) : (
+                        option.warning !== undefined && (
+                          <TriangleAlert size={11} className="shrink-0 text-[var(--t3-warning-foreground)]" />
+                        )
+                      )}
+                      <span className="min-w-0 whitespace-normal">{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <p className="mt-2 text-[11px] text-t3-muted">This approval can only be answered in T3 Code.</p>
       )}
       {error !== null && <p className="mt-1 text-[11px] text-[var(--t3-error-foreground)]">{error}</p>}
     </div>
+  );
+}
+
+/** One of T3's approval decisions, with the warning it carries when the provider names one. */
+function ApprovalOptionButton({
+  option,
+  busy,
+  disabled,
+  onPick,
+}: {
+  option: PanelApprovalOption;
+  busy: boolean;
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={option.warning}
+      aria-description={option.warning}
+      disabled={disabled}
+      onClick={onPick}
+      className={option.decision === "accept" ? primaryAction : action}
+    >
+      {busy ? (
+        <LoaderCircle size={11} className="animate-spin" />
+      ) : (
+        option.warning !== undefined && <TriangleAlert size={11} className="text-[var(--t3-warning-foreground)]" />
+      )}
+      {option.label}
+    </button>
   );
 }
 

@@ -34,7 +34,11 @@ export interface Machine {
   reachable: boolean;
 }
 
-export type PanelTarget = ThreadRef | null;
+/** The panel's draft: no thread yet, only the composer that starts one. */
+export const NEW_THREAD = "new" as const;
+
+/** What the panel shows: a thread, the new-thread draft, or nothing. */
+export type PanelSurface = ThreadRef | typeof NEW_THREAD | null;
 
 /** "slide" fades the panel in out of the sidebar. */
 export type PanelEntrance = "slide" | "instant";
@@ -51,7 +55,7 @@ export interface OverlayState {
   unread: ThreadRef[];
   /** Whether a remote-control grant is in hand: the tray offers to grant one or to revoke it. */
   remoteControl: boolean;
-  panel: PanelTarget | null;
+  panel: PanelSurface;
   /** How the panel last opened. The hotkey opens it at once, straight into typing. */
   panelEntrance: PanelEntrance;
   panelSize: { width: number; height: number };
@@ -157,6 +161,11 @@ export function popoverLeft(state: Pick<OverlayState, "panel" | "panelSize" | "s
 
 export const threadKey = (thread: ThreadRef) => `${thread.environmentId}:${thread.threadId}`;
 
-export function sameThread(a: PanelTarget | null, b: ThreadRef): boolean {
+/** A thread's ref, or null for the draft and the closed panel; the two are not threads. */
+export function threadTarget(surface: PanelSurface): ThreadRef | null {
+  return surface === null || surface === NEW_THREAD ? null : surface;
+}
+
+export function sameThread(a: PanelSurface, b: ThreadRef): boolean {
   return typeof a === "object" && a !== null && a.environmentId === b.environmentId && a.threadId === b.threadId;
 }

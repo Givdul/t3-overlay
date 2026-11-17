@@ -1,4 +1,5 @@
 import type {
+  PanelApprovalOption,
   PanelAttempt,
   PanelEvent,
   PanelEventPayload,
@@ -8,7 +9,6 @@ import type {
   PanelQuestion,
   PanelRun,
   PanelRuntimeRequest,
-  PanelThread,
   PanelView,
 } from "../../../shared/panel";
 
@@ -20,6 +20,11 @@ export interface PanelState {
   targetKey: string;
   /** "live" once T3 said the projection is caught up; "ended" when the stream is gone. */
   status: "connecting" | "live" | "ended";
+  /**
+   * How many times T3 has said this thread is live: the first, and each reconnect. A live subscription
+   * (a running command's output) belongs to one socket, so the rows reopen theirs when this changes.
+   */
+  connection: number;
   reason: string | null;
   view: PanelView | null;
   /** The last event sequence applied, for dedupe after a resubscribe. */
@@ -32,6 +37,7 @@ export type PanelAction = { kind: "message"; targetKey: string; message: PanelMe
 export const initialState = (targetKey: string): PanelState => ({
   targetKey,
   status: "connecting",
+  connection: 0,
   reason: null,
   view: null,
   sequence: 0,
@@ -51,11 +57,19 @@ export function applyPanelMessage(state: PanelState, action: PanelAction): Panel
 function applyMessage(state: PanelState, message: PanelMessage): PanelState {
   switch (message.kind) {
     case "status":
-      return { ...state, status: message.status, reason: message.reason ?? null };
+      return {
+        ...state,
+        status: message.status,
+        reason: message.reason ?? null,
+        connection: message.status === "live" && state.status !== "live" ? state.connection + 1 : state.connection,
+      };
     case "snapshot":
       return { ...state, view: message.view, sequence: message.sequence ?? state.sequence };
     case "event":
       return applyEvent(state, message.event);
+    case "commandOutput":
+      // A row's live output belongs to the row that asked for it, not to the projection.
+      return state;
   }
 }
 
@@ -189,10 +203,14 @@ function applyRuntimeRequest(state: PanelState, view: PanelView, payload: PanelE
 }
 
 function applyThread(state: PanelState, view: PanelView, payload: PanelEventPayload): PanelState {
-  if (payload.title === undefined) return state;
-  const thread: PanelThread = { ...view.thread, title: payload.title };
+  let thread = view.thread;
 
-  return { ...state, view: { ...view, thread } };
+  if (payload.title !== undefined) thread = { ...thread, title: payload.title };
+
+  // T3 changing the thread's model from its own composer lands here too.
+  if (payload.modelSelection !== undefined) thread = { ...thread, modelSelection: payload.modelSelection };
+
+  return thread === view.thread ? state : { ...state, view: { ...view, thread } };
 }
 
 function refilterRows(view: PanelView, runs: PanelRun[], attempts: PanelAttempt[], items: PanelItemRef[]): PanelView["rows"] {
@@ -257,14 +275,20 @@ export function isVisible(
   return items.some((candidate) => candidate.type === "run_interrupt_request" && candidate.runId === item.runId);
 }
 
+/** The run the composer's Stop and queue attach to. A queued follow-up never ran, so it is no active run. */
 export function activeRun(view: PanelView | null): PanelRun | null {
-  const running: readonly string[] = ["preparing", "queued", "starting", "running", "waiting"];
+  const running: readonly string[] = ["preparing", "starting", "running", "waiting"];
 
   return view?.runs.findLast((run) => running.includes(run.status)) ?? null;
 }
 
 export interface PendingRequests {
-  approvals: (PanelRuntimeRequest & { prompt: string | null; reason: string | null })[];
+  approvals: (PanelRuntimeRequest & {
+    prompt: string | null;
+    reason: string | null;
+    /** The decisions T3's own card offers for this request; empty when the item named none. */
+    options: PanelApprovalOption[];
+  })[];
   questions: (PanelRuntimeRequest & { questions: PanelQuestion[] })[];
 }
 
@@ -292,6 +316,7 @@ export function pendingRequests(view: PanelView | null): PendingRequests {
       ...request,
       prompt: item?.prompt ?? null,
       reason: item?.reason ?? null,
+      options: item?.options ?? [],
     });
   }
 
@@ -312,4 +337,75 @@ export function needsReply(view: PanelView | null): boolean {
   const pending = pendingRequests(view);
 
   return pending.approvals.length > 0 || pending.questions.length > 0;
+}
+
+/**
+ * Why a queued message cannot be opened in the composer now, or null when it can
+ * (packages/client-runtime/src/queuedRunEdit.ts, queuedRunEditBlockedReason): an open question takes the
+ * composer over, so an edit begun then would happen out of sight and could be sent before it is seen.
+ */
+export function queuedRunEditBlockedReason(pending: PendingRequests): string | null {
+  return pending.questions.length > 0 ? "Answer the question to edit queued messages" : null;
+}
+
+/** A Stop the provider has not finished yet (packages/client-runtime/src/state/threadExecution.ts, presentRunStop). */
+export interface RunStop {
+  runId: string;
+  /** `unresponsive`: the provider did not confirm the stop in time, so T3 offers Force stop. */
+  state: "stopping" | "unresponsive";
+  /** When the stop was asked for, for T3's elapsed-time label. */
+  requestedAt: string | null;
+}
+
+/**
+ * The stop T3 draws under the timeline, ported: the latest run's last stop request, unless a result
+ * already answered it. A request that named no time to become unresponsive only counts on a live run.
+ */
+export function presentRunStop(view: PanelView | null): RunStop | null {
+  if (view === null) return null;
+
+  const active = activeRun(view);
+  // Queued follow-ups never ran, so they hold no Stop of their own.
+  const latest = view.runs.findLast((run) => run.status !== "queued") ?? null;
+  const run = active ?? latest;
+
+  if (run === null) return null;
+
+  let request: PanelItem | undefined;
+
+  for (const row of view.rows) {
+    const item = row.item;
+
+    if (item.runId !== run.id) continue;
+    // A provider that stopped late already wrote the result; it needs no banner.
+
+    if (item.type === "run_interrupt_result") return null;
+
+    if (item.type === "run_interrupt_request") request = item;
+  }
+
+  if (request === undefined || (active === null && request.unresponsiveAt === undefined)) return null;
+
+  return {
+    runId: run.id,
+    state: request.unresponsiveAt === undefined ? "stopping" : "unresponsive",
+    requestedAt: request.startedAt ?? null,
+  };
+}
+
+/**
+ * What T3 says after a force stop (apps/web/src/components/chat/useForceStopThread.ts). `killed` and
+ * `released` end the turn with nothing to explain, so they get T3's own "Turn stopped".
+ */
+export function forceStopNotice(outcome: string, sharedWithThreadIds: string[]): string {
+  if (outcome === "releasing") return "Turn stopped; the agent is still shutting down";
+
+  if (outcome === "shared") {
+    const others = sharedWithThreadIds.length === 0 ? "other" : String(sharedWithThreadIds.length);
+    const threads = sharedWithThreadIds.length === 1 ? "thread" : "threads";
+
+    return `Turn stopped; the agent process kept running. It is shared with ${others} working ${threads}. Stop those to free it.`;
+  }
+
+  return "Turn stopped";
 }

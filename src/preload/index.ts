@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { OverlayState, PanelTarget, Popover, ThreadRef } from "../shared/types";
+import type { OverlayState, PanelSurface, Popover, ThreadRef } from "../shared/types";
 import type { OverlayApi } from "./api";
 
 const api: OverlayApi = {
@@ -14,7 +14,7 @@ const api: OverlayApi = {
     return () => ipcRenderer.off("overlay:focus-composer", listener);
   },
   setExtent: (extent) => ipcRenderer.send("overlay:extent", extent),
-  open: (target: PanelTarget) => ipcRenderer.send("overlay:open", target),
+  open: (target: PanelSurface) => ipcRenderer.send("overlay:open", target),
   setPopover: (popover: Popover | null) => ipcRenderer.send("overlay:popover", popover),
   threadMenu: (thread: ThreadRef) => ipcRenderer.send("overlay:thread-menu", thread),
   onPanel: (listener) => {
@@ -25,7 +25,7 @@ const api: OverlayApi = {
   },
   panel: (command) => ipcRenderer.invoke("overlay:panel-command", command),
   openLink: (url: string) => ipcRenderer.send("overlay:open-link", url),
-  openInT3: (target: ThreadRef | "new") => ipcRenderer.send("overlay:open-in-t3", target),
+  openInT3: (target: ThreadRef) => ipcRenderer.send("overlay:open-in-t3", target),
   setOpacity: (opacity: number) => ipcRenderer.send("overlay:opacity", opacity),
   setLocked: (locked: boolean) => ipcRenderer.send("overlay:lock", locked),
   setSettings: (patch) => ipcRenderer.send("overlay:settings", patch),

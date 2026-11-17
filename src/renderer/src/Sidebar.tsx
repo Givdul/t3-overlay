@@ -1,6 +1,7 @@
 import { CircleDashed, Plus } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  NEW_THREAD,
   SIDEBAR_SLOT_HEIGHT,
   SIDEBAR_WIDTH,
   sameThread,
@@ -187,7 +188,7 @@ export function Sidebar({ state }: { state: OverlayState }) {
           notes: [...warnings, ...machineNotes].map((text) => ({ text, color: "text-amber-300" })),
         };
       case "new":
-        return { title: "New thread in T3" };
+        return { title: "New thread" };
       case "working":
         return { title: `${state.working.length} working` };
     }
@@ -225,10 +226,10 @@ export function Sidebar({ state }: { state: OverlayState }) {
           <button
             type="button"
             className={`${button} ${pressable} my-1.5`}
-            aria-label="New thread in T3"
+            aria-label="New thread"
             {...tooltip.anchor("new")}
             disabled={state.t3 !== "connected"}
-            onClick={() => window.overlay.openInT3("new")}
+            onClick={() => window.overlay.open(NEW_THREAD)}
           >
             <Plus size={18} />
           </button>
