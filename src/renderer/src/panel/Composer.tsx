@@ -269,6 +269,10 @@ export function Composer(props: ComposerProps) {
     setError(null);
     setRefusal(null);
 
+    // The send owns these uploads before it leaves: a thread switch while it is in flight must not
+    // delete what the message is about to reference. A failure puts them back in the draft's hands.
+    const claimed = draft.markSent();
+
     // T3 clears the box as it dispatches; a failure puts the draft back.
     const snapshot = textRef.current;
     setDraftText("");
@@ -287,6 +291,8 @@ export function Composer(props: ComposerProps) {
     setSending(false);
 
     if (!reply.ok) {
+      draft.unmarkSent(claimed);
+
       // A remote action T3 turned down is answered in T3, so the card carries T3's own message.
       if (reply.refusal === true && props.onOpenInT3 !== null) setRefusal({ error: reply.error, grant: reply.grant === true });
       else setError(reply.error);
@@ -443,10 +449,11 @@ export function Composer(props: ComposerProps) {
           // An IME's Enter confirms the candidate, not the message.
           if (event.nativeEvent.isComposing) return;
 
-          // An open menu takes the keys it needs: arrows move its highlight, Enter or Tab picks, and
-          // Escape closes it alone rather than the panel behind it.
+          // An open menu takes the keys it needs: arrows move its highlight while it lists rows, Enter
+          // or Tab picks the highlighted row, and Escape closes it alone rather than the panel behind it.
+          // With nothing highlighted, Enter and Tab fall through to the send below.
           if (menu.kind !== null) {
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            if ((event.key === "ArrowDown" || event.key === "ArrowUp") && menu.items.length > 0) {
               event.preventDefault();
               menu.move(event.key === "ArrowDown" ? 1 : -1);
 
@@ -454,12 +461,14 @@ export function Composer(props: ComposerProps) {
             }
 
             if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) {
-              event.preventDefault();
               const item = menu.chosen();
 
-              if (item !== null) pickSuggestion(item);
+              if (item !== null) {
+                event.preventDefault();
+                pickSuggestion(item);
 
-              return;
+                return;
+              }
             }
 
             if (event.key === "Escape") {

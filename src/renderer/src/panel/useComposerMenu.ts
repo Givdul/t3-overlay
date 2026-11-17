@@ -78,6 +78,8 @@ export function useComposerMenu(options: ComposerMenuOptions): ComposerMenuState
     trigger === null ? null : `${options.text}\n${trigger.kind}:${trigger.rangeStart}:${trigger.rangeEnd}`;
 
   const kind = trigger?.kind ?? null;
+  // The trigger is rebuilt every render; its own range is what tells one token from the next.
+  const triggerKey = trigger === null ? null : `${trigger.kind}:${trigger.rangeStart}:${trigger.rangeEnd}`;
   const pathQuery = trigger?.kind === "path" ? trigger.query : "";
   const projectId = options.projectId;
 
@@ -88,8 +90,8 @@ export function useComposerMenu(options: ComposerMenuOptions): ComposerMenuState
 
   // The writer left the token: a later one is a new menu, not the one they closed.
   useEffect(() => {
-    if (trigger === null && dismissed !== null) setDismissed(null);
-  }, [trigger, dismissed]);
+    if (triggerKey === null && dismissed !== null) setDismissed(null);
+  }, [triggerKey, dismissed]);
 
   // The search runs as the query settles, and its answer is kept with the query it answers: a list for
   // an older query never stands in for the current one.

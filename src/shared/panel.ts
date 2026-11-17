@@ -213,6 +213,8 @@ export interface PanelPlan {
   kind: string;
   /** "draft", "active", "completed" or "superseded". */
   status: string;
+  /** A proposed plan's own markdown, which its Implement follow-up sends back (proposed_plan.markdown). */
+  markdown?: string;
 }
 
 export interface PanelAttempt {

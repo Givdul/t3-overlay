@@ -243,6 +243,8 @@ interface WirePlan {
   id?: string;
   kind?: string;
   status?: string;
+  /** A proposed plan's own text, which the Implement follow-up sends back (proposed_plan.markdown). */
+  markdown?: string;
 }
 
 interface WireProjection {
@@ -446,8 +448,9 @@ export interface Panel {
 const OUTPUT_LIMIT = 8000;
 
 /**
- * T3's own follow-up text when a plan is implemented; the server reads the plan from `sourcePlanRef`
- * (apps/web/src/proposedPlan.ts, PLAN_IMPLEMENTATION_PROMPT_PREFIX).
+ * T3's own follow-up text when a plan is implemented: this prefix, then the plan's markdown as the
+ * message the agent reads. The reference only names the plan T3 completes (apps/web/src/proposedPlan.ts,
+ * PLAN_IMPLEMENTATION_PROMPT_PREFIX; apps/server/src/orchestration-v2/Orchestrator.ts sends `command.text`).
  */
 const PLAN_IMPLEMENTATION_PROMPT = "PLEASE IMPLEMENT THIS PLAN:\n";
 
@@ -461,8 +464,8 @@ export function startPanel(options: PanelOptions): Panel {
   let target: ThreadRef | null = null;
   /** T3's descriptor as last read; a reconnect re-reads it so an upgraded server's flags are not stale. */
   let server = options.server;
-  /** Whether this panel has subscribed before, so the next one is a reconnect or a thread switch. */
-  let subscribed = false;
+  /** Set by a dropped socket's resubscribe: only then is the descriptor re-read, never on a thread switch. */
+  let refreshOnReconnect = false;
   let rpc: T3Rpc<WireReply> | null = null;
   let stopStream: (() => void) | null = null;
   /** The last sequence main forwarded: a resubscribe resumes after it. */
@@ -509,6 +512,8 @@ export function startPanel(options: PanelOptions): Panel {
 
     if (retryTimer !== null) clearTimeout(retryTimer);
     retryTimer = null;
+
+    refreshOnReconnect = false;
   }
 
   /** Ends every live command-output stream; a collapsed row or a thread switch means none is wanted. */
@@ -584,6 +589,7 @@ export function startPanel(options: PanelOptions): Panel {
     if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) backoff.reset();
 
     connectedAt = null;
+    refreshOnReconnect = true;
     const delay = backoff.nextDelay();
     console.warn(`[panel] reconnecting in ${delay}ms after ${threadId}`);
     options.onMessage({ kind: "status", status: "connecting" });
@@ -598,8 +604,12 @@ export function startPanel(options: PanelOptions): Panel {
     generation = current;
     options.onMessage({ kind: "status", status: "connecting" });
 
-    // A thread switch or a dropped socket lands here: T3's flags may have changed with its server.
-    if (subscribed) await refreshServer();
+    // A dropped socket lands here: T3's flags may have changed with its server. A thread switch keeps
+    // the descriptor, so it costs neither the runtime file read nor the fetch.
+    if (refreshOnReconnect) {
+      refreshOnReconnect = false;
+      await refreshServer();
+    }
 
     if (current !== generation) return;
 
@@ -632,7 +642,6 @@ export function startPanel(options: PanelOptions): Panel {
 
     rpc = connection;
     connectedAt = Date.now();
-    subscribed = true;
     const payload: WirePayload = { threadId, requestCompletionMarker: true };
 
     if (lastSequence > 0) payload.afterSequence = lastSequence;
@@ -998,9 +1007,16 @@ export function startPanel(options: PanelOptions): Panel {
 
           return { ok: true };
         case "implementPlan": {
+          // The view can still be the thread the reader left: only this thread's plan and mode count.
+          const current = view?.thread.id === thread.threadId ? view : null;
+          const plan = current?.plans.find((candidate) => candidate.id === next.planId);
+
+          // The plan's own markdown is the message; the reference below only tells T3 what it completes.
+          if (plan?.markdown === undefined) return refuse("T3 has no plan to implement");
+
           // T3 leaves plan mode for the implementing turn (apps/web/src/hooks/useHandleNewThread.ts,
           // persistThreadSettingsForNextTurn writes the mode before the message).
-          if (view?.thread.interactionMode === "plan") {
+          if (current?.thread.interactionMode === "plan") {
             await dispatch({ type: "thread.interaction-mode.set", threadId: thread.threadId, interactionMode: "default" });
           }
 
@@ -1008,7 +1024,7 @@ export function startPanel(options: PanelOptions): Panel {
             type: "message.dispatch",
             threadId: thread.threadId,
             messageId: randomUUID(),
-            text: PLAN_IMPLEMENTATION_PROMPT,
+            text: `${PLAN_IMPLEMENTATION_PROMPT}${plan.markdown}`,
             attachments: [],
             createdBy: "user",
             creationSource: "web",
@@ -1478,7 +1494,12 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
 function trimPlan(raw: WirePlan | undefined): PanelPlan | null {
   if (raw?.id === undefined) return null;
 
-  return { id: raw.id, kind: raw.kind ?? "", status: raw.status ?? "" };
+  const plan: PanelPlan = { id: raw.id, kind: raw.kind ?? "", status: raw.status ?? "" };
+
+  // The Implement follow-up sends a proposed plan's own markdown back; a todo list has none.
+  if (raw.markdown !== undefined) plan.markdown = raw.markdown;
+
+  return plan;
 }
 
 /**
@@ -1648,7 +1669,7 @@ export function trimModels(config: WireServerConfig | undefined, cwd: string | n
       {
         instanceId,
         displayName: provider.displayName ?? provider.driver ?? instanceId,
-        // T3's own graph: a provider that names no toggle shows none, and one that names no modes takes all.
+        // T3's own graph: a provider that names no toggle still shows it, and one that names no modes takes all.
         showInteractionModeToggle: provider.showInteractionModeToggle !== false,
         supportedRuntimeModes: (provider.supportedRuntimeModes ?? []).filter(Boolean),
         models,

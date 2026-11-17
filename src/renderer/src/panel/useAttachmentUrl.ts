@@ -13,8 +13,11 @@ export interface AttachmentUrlState {
   retry(): void;
 }
 
-/** Two retries cover an expired URL; a third failure is T3's to explain. */
+/** Two retries cover an expired URL; once they are spent the chip stands in for the image. */
 const MAX_ATTEMPTS = 3;
+
+/** The last minted URL did not load either, and no attempt is left to replace it. */
+const LOAD_FAILED = "The image did not load";
 
 export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   const [url, setUrl] = useState<string | null>(null);
@@ -44,7 +47,15 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
     url,
     error,
     retry() {
-      setAttempt((current) => (current < MAX_ATTEMPTS - 1 ? current + 1 : current));
+      if (attempt < MAX_ATTEMPTS - 1) {
+        setAttempt(attempt + 1);
+
+        return;
+      }
+
+      // An `<img>` whose URL fails to load gets no reply from main: the spent attempts are the error,
+      // so the row draws the chip instead of the broken image.
+      setError(LOAD_FAILED);
     },
   };
 }

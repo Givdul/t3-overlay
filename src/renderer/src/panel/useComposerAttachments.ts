@@ -24,6 +24,13 @@ export interface ComposerAttachments {
   attachments: DraftAttachment[];
   addFiles(files: File[]): void;
   remove(attachment: DraftAttachment): void;
+  /**
+   * Marks the uploaded chips the send is about to reference, so a thread switch while it is in flight
+   * keeps them. Returns their ids, which a failure hands back to `unmarkSent`.
+   */
+  markSent(): string[];
+  /** Puts a failed send's chips back in the draft's hands: a live draft keeps them, a switched-away one releases them. */
+  unmarkSent(ids: string[]): void;
   /** Drops every chip after a successful send. */
   clear(): void;
 }
@@ -152,6 +159,24 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
     if (attachment.id !== null) releaseUpload(attachment.id);
   }
 
+  function markSent(): string[] {
+    const ids = attachmentsNow.current.flatMap((attachment) => (attachment.id === null ? [] : [attachment.id]));
+
+    for (const id of ids) sent.current.add(id);
+
+    return ids;
+  }
+
+  function unmarkSent(ids: string[]) {
+    for (const id of ids) {
+      sent.current.delete(id);
+
+      // The draft that held it is gone (a switch during the send): T3 would keep an upload no message
+      // references, so release it here as the switch's own release would have.
+      if (!attachmentsNow.current.some((attachment) => attachment.id === id)) releaseUpload(id);
+    }
+  }
+
   function clear() {
     // A successful send hands these uploads to T3; only an abandoned draft deletes them.
     for (const attachment of attachmentsNow.current) {
@@ -168,6 +193,8 @@ export function useComposerAttachments(options: Options): ComposerAttachments {
       void upload(files);
     },
     remove,
+    markSent,
+    unmarkSent,
     clear,
   };
 }
