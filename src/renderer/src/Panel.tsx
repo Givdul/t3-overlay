@@ -11,8 +11,10 @@ import {
   type ThreadRef,
 } from "../../shared/types";
 import { Composer, type ComposerHandle } from "./panel/Composer";
+import { ImagePreview } from "./panel/ImagePreview";
 import { ProjectPicker } from "./panel/ProjectPicker";
 import { Timeline } from "./panel/Timeline";
+import { useImagePreview } from "./panel/useImagePreview";
 import { activeRun, applyPanelMessage, forceStopNotice, initialState, needsReply, pendingRequests, presentRunStop } from "./panel/model";
 import { useDraftFocus, useNewThreadDraft, type NewThreadDraft } from "./panel/useNewThreadDraft";
 import { useQueuedEdit } from "./panel/useQueuedEdit";
@@ -33,6 +35,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const draft = useNewThreadDraft(draftOpen);
   const [composerOpen, setComposerOpen] = useState(false);
   const [text, setText] = useState("");
+  const imagePreview = useImagePreview();
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showToEnd, setShowToEnd] = useState(false);
@@ -52,6 +55,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     setFocused(false);
     setBusy(false);
     setShowToEnd(false);
+    imagePreview.close();
     follow.current = true;
   }, [targetKey]);
 
@@ -253,7 +257,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
 
   return (
     <div
-      className={`group/chat flex min-h-0 flex-col ${entrance} ${outlineClass(settings.textOutline)} ${canCompose && !folded ? "pb-4" : ""}`}
+      className={`group/chat relative flex min-h-0 flex-col ${entrance} ${outlineClass(settings.textOutline)} ${canCompose && !folded ? "pb-4" : ""}`}
       // SAFETY: React passes custom properties through untouched; the CSS reads them as numbers and
       // percentages, and the style's other keys are the panel's placement from App.tsx.
       style={
@@ -288,6 +292,7 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
                 onCancelQueued={cancelQueued}
                 onLink={(url) => window.overlay.openLink(url)}
                 onOpenInT3={openInT3}
+                onImageOpen={imagePreview.open}
               />
             ) : panel.status === "ended" ? (
               <PlaceholderCard
@@ -343,7 +348,15 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           attachmentUploads={draftOpen ? (draft.info?.attachmentUploads ?? null) : (view?.attachmentUploads ?? null)}
           voiceTranscription={draftOpen ? draft.info?.voiceTranscription === true : view?.voiceTranscription === true}
           modelSelection={draftOpen ? draft.model : (view?.thread.modelSelection ?? null)}
+          modelTraits={draftOpen ? true : (view?.modelTraits ?? false)}
+          runtimeMode={draftOpen ? draft.runtimeMode : (view?.thread.runtimeMode ?? null)}
+          interactionMode={draftOpen ? draft.interactionMode : (view?.thread.interactionMode ?? null)}
+          projectId={draftOpen ? (draft.project?.projectId ?? null) : (view?.thread.projectId ?? null)}
+          composerMenus={draftOpen ? true : (view?.composerMenus ?? false)}
           onPickModel={draftOpen ? draft.selectModel : undefined}
+          onPickModelOptions={draftOpen ? draft.selectModelOptions : undefined}
+          onPickRuntimeMode={draftOpen ? draft.selectRuntimeMode : undefined}
+          onSetPlanMode={draftOpen ? draft.setPlanMode : undefined}
           onSend={draftOpen ? draft.create : sendMessage}
           editingQueued={queuedEdit.edit !== null}
           onSaveQueuedEdit={saveQueuedEdit}
@@ -360,6 +373,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           handle={composer}
         />
       )}
+
+      <ImagePreview image={imagePreview.image} onClose={imagePreview.close} />
 
       <div
         className={`absolute bottom-0 size-4 ${corner}`}

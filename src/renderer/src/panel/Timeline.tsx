@@ -21,13 +21,15 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { PanelItem, PanelQueuedMessage, PanelView } from "../../../shared/panel";
+import type { PanelAttachment, PanelItem, PanelQueuedMessage, PanelView } from "../../../shared/panel";
 import { formatAttachmentSize } from "../../../shared/attachments";
 import { Markdown } from "../markdown";
 import { forceStopNotice, queuedRunEditBlockedReason, type PendingRequests, type RunStop } from "./model";
 import { ApprovalCard, QuestionCard } from "./Requests";
+import { useAttachmentUrl } from "./useAttachmentUrl";
 import { useCommandOutput } from "./useCommandOutput";
 import { useElapsed } from "./useElapsed";
+import type { PreviewImage } from "./useImagePreview";
 
 // One line per turn item, expanded on click. Every row keeps T3's own labels and muted tone, so the
 // timeline reads like the one in T3.
@@ -65,11 +67,16 @@ interface TimelineProps {
   onLink: LinkHandler;
   /** Set for a thread on another machine: its approvals open in T3, which alone can answer them. */
   onOpenInT3: (() => void) | null;
+  /** Opens a timeline image larger, inside the panel. */
+  onImageOpen: (image: PreviewImage) => void;
 }
 
 export function Timeline(props: TimelineProps) {
   const { view, pending, stop, editingRunId, onLink, onOpenInT3 } = props;
   const editBlocked = queuedRunEditBlockedReason(pending);
+  // T3 offers its Implement follow-up on the latest plan that is still active (apps/web/src/
+  // components/ChatView.logic.ts, hasActionableProposedPlan); implementing it completes the plan.
+  const latestPlan = view.planImplementation ? latestImplementablePlan(view) : null;
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -80,8 +87,11 @@ export function Timeline(props: TimelineProps) {
           pending={pending}
           connection={props.connection}
           commandOutputStreaming={view.commandOutputStreaming}
+          imagePreviews={view.imagePreviews}
+          implementPlanId={latestPlan?.sourceItemId === row.sourceItemId ? latestPlan.planId : null}
           onLink={onLink}
           onOpenInT3={onOpenInT3}
+          onImageOpen={props.onImageOpen}
         />
       ))}
       {view.queued.map((message) => (
@@ -257,8 +267,11 @@ function TimelineRow({
   pending,
   connection,
   commandOutputStreaming,
+  imagePreviews,
+  implementPlanId,
   onLink,
   onOpenInT3,
+  onImageOpen,
 }: {
   item: PanelItem;
   pending: PendingRequests;
@@ -266,13 +279,18 @@ function TimelineRow({
   connection: number;
   /** T3 streams a running command's output; false keeps the per-row fetch. */
   commandOutputStreaming: boolean;
+  /** Image attachments draw as thumbnails; false draws chips. */
+  imagePreviews: boolean;
+  /** The plan this row's Implement action sends, when it is the latest active one. */
+  implementPlanId: string | null;
   onLink: LinkHandler;
   /** Set for a thread on another machine: its approvals open in T3, which alone can answer them. */
   onOpenInT3: (() => void) | null;
+  onImageOpen: (image: PreviewImage) => void;
 }) {
   switch (item.type) {
     case "user_message":
-      return <UserMessageRow item={item} onLink={onLink} />;
+      return <UserMessageRow item={item} imagePreviews={imagePreviews} onLink={onLink} onImageOpen={onImageOpen} />;
     case "assistant_message":
       return <AssistantMessageRow item={item} onLink={onLink} />;
     case "reasoning":
@@ -290,7 +308,7 @@ function TimelineRow({
     case "todo_list":
       return <TodoRow item={item} />;
     case "proposed_plan":
-      return <PlanRow item={item} onLink={onLink} />;
+      return <PlanRow item={item} implementPlanId={implementPlanId} onLink={onLink} />;
     case "error":
       return <ErrorRow item={item} />;
     case "system_notice":
@@ -324,7 +342,17 @@ function TimelineRow({
 
 // ---------------------------------------------------------------- messages
 
-function UserMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler }) {
+function UserMessageRow({
+  item,
+  imagePreviews,
+  onLink,
+  onImageOpen,
+}: {
+  item: PanelItem;
+  imagePreviews: boolean;
+  onLink: LinkHandler;
+  onImageOpen: (image: PreviewImage) => void;
+}) {
   const text = item.text ?? "";
   const queued = item.inputIntent === "queued_turn" && item.status !== "completed";
   const attachments = item.attachments ?? [];
@@ -333,21 +361,25 @@ function UserMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler
     <div className="group/msg flex min-w-0 flex-col items-end gap-1">
       {attachments.length > 0 && (
         <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
-          {attachments.map((attachment) => (
-            <span
-              key={attachment.id}
-              title={attachment.name}
-              className="flex max-w-full min-w-0 items-center gap-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[color-mix(in_srgb,var(--t3-message-surface)_var(--t3-bubble-opacity),transparent)] px-2 py-1 text-[11px] text-t3-fg"
-            >
-              {attachment.type === "image" ? (
-                <ImageIcon size={12} className="shrink-0 text-t3-muted" />
-              ) : (
-                <FileText size={12} className="shrink-0 text-t3-muted" />
-              )}
-              <span className="min-w-0 truncate">{attachment.name}</span>
-              <span className="shrink-0 text-t3-muted">{formatAttachmentSize(attachment.sizeBytes)}</span>
-            </span>
-          ))}
+          {attachments.map((attachment) =>
+            attachment.type === "image" && imagePreviews ? (
+              <MessageImage key={attachment.id} attachment={attachment} onOpen={onImageOpen} />
+            ) : (
+              <span
+                key={attachment.id}
+                title={attachment.name}
+                className="flex max-w-full min-w-0 items-center gap-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[color-mix(in_srgb,var(--t3-message-surface)_var(--t3-bubble-opacity),transparent)] px-2 py-1 text-[11px] text-t3-fg"
+              >
+                {attachment.type === "image" ? (
+                  <ImageIcon size={12} className="shrink-0 text-t3-muted" />
+                ) : (
+                  <FileText size={12} className="shrink-0 text-t3-muted" />
+                )}
+                <span className="min-w-0 truncate">{attachment.name}</span>
+                <span className="shrink-0 text-t3-muted">{formatAttachmentSize(attachment.sizeBytes)}</span>
+              </span>
+            ),
+          )}
         </div>
       )}
       <div
@@ -361,6 +393,54 @@ function UserMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler
         <MessageMeta text={text} at={item.startedAt ?? item.completedAt} timeFirst />
       </div>
     </div>
+  );
+}
+
+/**
+ * A sent image, drawn from T3's signed asset URL as its web client draws one. A URL that cannot be
+ * minted, or has expired twice, leaves the attachment's chip in place instead of an empty tile.
+ */
+function MessageImage({ attachment, onOpen }: { attachment: PanelAttachment; onOpen: (image: PreviewImage) => void }) {
+  const { url, error, retry } = useAttachmentUrl(attachment.id);
+
+  if (error !== null) {
+    return (
+      <span
+        title={`${attachment.name}: ${error}`}
+        className="flex max-w-full min-w-0 items-center gap-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[color-mix(in_srgb,var(--t3-message-surface)_var(--t3-bubble-opacity),transparent)] px-2 py-1 text-[11px] text-t3-fg"
+      >
+        <ImageIcon size={12} className="shrink-0 text-t3-muted" />
+        <span className="min-w-0 truncate">{attachment.name}</span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      title={attachment.name}
+      aria-label={`Open ${attachment.name}`}
+      disabled={url === null}
+      onClick={() => {
+        if (url !== null) onOpen({ url, name: attachment.name });
+      }}
+      className="size-24 shrink-0 overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[color-mix(in_srgb,var(--t3-message-surface)_var(--t3-bubble-opacity),transparent)] transition-opacity hover:opacity-90 disabled:cursor-default"
+    >
+      {url === null ? (
+        <span className="flex size-full items-center justify-center text-t3-muted">
+          <ImageIcon size={14} />
+        </span>
+      ) : (
+        <img
+          src={url}
+          alt={attachment.name}
+          loading="lazy"
+          draggable={false}
+          onError={retry}
+          className="size-full object-cover"
+        />
+      )}
+    </button>
   );
 }
 
@@ -540,7 +620,7 @@ function useFullItem(item: PanelItem, open: boolean) {
 function CommandRow({ item, streaming, connection }: { item: PanelItem; streaming: boolean; connection: number }) {
   const [open, setOpen] = useState(false);
   const running = IN_PROGRESS_STATUSES.has(item.status ?? "");
-  const live = useCommandOutput(item, open, streaming, running, connection);
+  const live = useCommandOutput(item, open, streaming, connection);
   const input = firstLine(item.input ?? "");
   const output = live.output;
   const shown = output !== null && output !== "";
@@ -698,15 +778,60 @@ function TodoRow({ item }: { item: PanelItem }) {
   );
 }
 
-function PlanRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler }) {
+function PlanRow({ item, implementPlanId, onLink }: { item: PanelItem; implementPlanId: string | null; onLink: LinkHandler }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function implement() {
+    if (implementPlanId === null || busy) return;
+
+    setBusy(true);
+    setError(null);
+
+    const reply = await window.overlay.panel({ type: "implementPlan", planId: implementPlanId });
+
+    setBusy(false);
+
+    if (!reply.ok) setError(reply.error);
+  }
+
   return (
     <div className="min-w-0 rounded-xl border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] p-3">
       <p className="mb-1 text-[11px] text-t3-muted">Plan</p>
       <div className="text-[length:var(--t3-font-size-prompt)] leading-relaxed">
         <Markdown text={item.markdown ?? ""} onLink={onLink} />
       </div>
+      {implementPlanId !== null && (
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void implement()}
+            className="flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] px-2.5 py-1 text-[12px] text-t3-fg transition-colors hover:bg-t3-accent disabled:cursor-default disabled:opacity-40"
+          >
+            {busy && <LoaderCircle size={11} className="animate-spin" />}
+            {busy ? "Implementing…" : "Implement"}
+          </button>
+          {error !== null && <span className="min-w-0 truncate text-[11px] text-[var(--t3-error-foreground)]">{error}</span>}
+        </div>
+      )}
     </div>
   );
+}
+
+/** The latest plan row whose plan is still active, with the plan id its Implement action sends. */
+function latestImplementablePlan(view: PanelView): { sourceItemId: string; planId: string } | null {
+  for (let index = view.rows.length - 1; index >= 0; index -= 1) {
+    const row = view.rows[index]!;
+
+    if (row.item.type !== "proposed_plan" || row.item.planId === undefined || row.item.streaming === true) continue;
+
+    const plan = view.plans.find((candidate) => candidate.id === row.item.planId);
+
+    return plan?.kind === "proposed_plan" && plan.status === "active" ? { sourceItemId: row.sourceItemId, planId: plan.id } : null;
+  }
+
+  return null;
 }
 
 function ErrorRow({ item }: { item: PanelItem }) {

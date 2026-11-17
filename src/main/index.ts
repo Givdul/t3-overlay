@@ -338,6 +338,24 @@ function startFeed(server: T3Server, token: string) {
     server,
     token,
     environmentId: server.environmentId,
+    // The composer's `@` menu searches a project's own checkout, which the shell lists by project id.
+    projectRoot: (projectId) => projects.find((project) => project.projectId === projectId)?.workspaceRoot ?? null,
+    // The panel's own reconnect re-reads T3's descriptor, so an upgraded server's flags are not stale.
+    refreshServer: async () => {
+      const next = await readServer();
+
+      // The draft reads the same flags off `localServer`; a moved origin keeps the feed's server until reconnect.
+      if (
+        next !== null &&
+        localServer !== null &&
+        next.origin === localServer.origin &&
+        next.environmentId === localServer.environmentId
+      ) {
+        localServer = next;
+      }
+
+      return next;
+    },
     onMessage: sendPanelMessage,
     onAuthExpired: () => refreshSession(server),
   });
@@ -876,6 +894,12 @@ async function draftCommand(command: PanelDraftCommand): Promise<PanelDraftReply
 
 handleHostWith("overlay:panel-command", (command: PanelCommand) => {
   if (command.type === "draft" || command.type === "create") return draftCommand(command);
+
+  // An upload is this PC's whichever thread the composer has moved to: T3's `/mcp` route cannot delete
+  // one, so a chip released after a switch to another machine's thread goes to the local panel.
+  if (command.type === "releaseAttachment") {
+    return panel === null ? { ok: false as const, error: "T3 is not connected" } : panel.command(command);
+  }
 
   // Another machine's thread is driven through `/mcp`, by its environmentId. The draft is not a thread.
   const target = threadTarget(state.panel);

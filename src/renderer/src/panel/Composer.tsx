@@ -1,4 +1,4 @@
-import { ArrowUp, ExternalLink, FileText, LoaderCircle, Mic, Paperclip, PenLine, Square, X } from "lucide-react";
+import { ArrowUp, ExternalLink, FileText, ListChecks, LoaderCircle, Mic, Paperclip, PenLine, Square, X } from "lucide-react";
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type RefObject } from "react";
 import { formatAttachmentSize } from "../../../shared/attachments";
 import type {
@@ -6,18 +6,28 @@ import type {
   PanelAttachmentReply,
   PanelAttachmentUploads,
   PanelCreateReply,
+  PanelModelOption,
   PanelModelSelection,
   PanelReply,
   PanelRun,
 } from "../../../shared/panel";
+import { findModel } from "./modelTraits";
+import { ComposerMenu } from "./ComposerMenu";
+import { applyComposerSuggestion, clearComposerTrigger } from "./composerTrigger";
 import { ModelPicker } from "./ModelPicker";
+import { RuntimeModePicker } from "./RuntimeModePicker";
+import { TraitsPicker } from "./TraitsPicker";
 import { useComposerAttachments } from "./useComposerAttachments";
+import { useComposerMenu, type ComposerMenuItem } from "./useComposerMenu";
+import { useModelCatalog } from "./useModelCatalog";
 import { usePendingCaret } from "./usePendingCaret";
 import { useVoiceInput, type VoicePhase } from "./useVoiceInput";
 
 // The panel's composer: plain text, attachments, dictation, Enter sends, Stop while a turn runs. Enter
 // queues behind the active run instead of starting one; T3 draws the queued message until it starts.
 // The new-thread draft draws the same card, and its send starts the thread instead of joining one.
+// Its footer holds T3's composer settings: the model, the model's options, plan mode and the thread's
+// permission mode. Typing `/` or `@` opens T3's own command and file menus above the box.
 
 export interface ComposerHandle {
   focus(): void;
@@ -42,8 +52,24 @@ interface ComposerProps {
   voiceTranscription: boolean;
   /** The thread's model; null hides the model control. */
   modelSelection: PanelModelSelection | null;
+  /** Whether the model's options are offered; another machine's thread cannot take them. */
+  modelTraits: boolean;
+  /** The thread's permission mode; null hides the mode control. */
+  runtimeMode: string | null;
+  /** "default" or "plan"; null hides the plan toggle. */
+  interactionMode: string | null;
+  /** The project whose files `@` searches, and whose own skills the provider scan adds; null hides the file menu. */
+  projectId: string | null;
+  /** Whether `/` and `@` open T3's menus; another machine's thread offers neither. */
+  composerMenus: boolean;
   /** The draft picks the model its new thread starts on; an open thread switches through main. */
   onPickModel?: (selection: PanelModelSelection) => void;
+  /** The draft keeps the model's options for the thread it creates; an open thread writes through main. */
+  onPickModelOptions?: (options: PanelModelOption[]) => void;
+  /** The draft keeps the permission mode for the thread it creates; an open thread writes through main. */
+  onPickRuntimeMode?: (mode: string) => void;
+  /** The draft keeps plan mode for the thread it creates; an open thread writes through main. */
+  onSetPlanMode?: (plan: boolean) => void;
   /** Sends the message into the open thread, or starts the draft's thread with it. */
   onSend(text: string, attachments: PanelAttachment[], queue: boolean): Promise<PanelReply | PanelAttachmentReply | PanelCreateReply>;
   /** The queued message this box is editing; its save replaces send and queue. */
@@ -63,9 +89,11 @@ interface ComposerProps {
 
 export function Composer(props: ComposerProps) {
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<{ error: string; grant: boolean } | null>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const wantFocus = useRef(false);
@@ -107,11 +135,70 @@ export function Composer(props: ComposerProps) {
   const attachable = props.attachmentUploads !== null;
   const uploading = attachments.some((attachment) => attachment.status !== "ready");
 
+  // The catalog is read once for the whole footer: the model list, the model's options, the provider's
+  // permission modes, plan toggle, commands and skills all come from it.
+  const catalog = useModelCatalog(props.threadKey, props.projectId);
+  const named = props.modelSelection === null ? null : findModel(catalog.providers, props.modelSelection);
+  const planAllowed = props.interactionMode !== null && named?.provider.showInteractionModeToggle !== false;
+  const planOn = props.interactionMode === "plan";
+
+  // T3's two autocomplete menus, read from the token at the caret.
+  const menu = useComposerMenu({
+    enabled: props.composerMenus,
+    text,
+    caret,
+    projectId: props.projectId,
+    provider: named?.provider ?? null,
+  });
+
+  /** T3's plan toggle (apps/mobile/src/state/thread-outbox-model.ts, resolveProviderInteractionMode). */
+  async function togglePlan() {
+    const next = planOn ? "default" : "plan";
+
+    if (props.onSetPlanMode !== undefined) {
+      props.onSetPlanMode(next === "plan");
+
+      return;
+    }
+
+    setError(null);
+    const reply = await window.overlay.panel({ type: "setInteractionMode", interactionMode: next });
+
+    if (!reply.ok) setError(reply.error);
+  }
+
   const setDraftText = (value: string) => {
     textRef.current = value;
     setText(value);
     props.onTextChange(value);
   };
+
+  /** Applies a menu pick to the box: T3 inserts the text at the trigger and leaves the caret after it. */
+  function pickSuggestion(item: ComposerMenuItem) {
+    const trigger = menu.trigger;
+
+    if (trigger === null) return;
+
+    // T3's `/model` clears the trigger and opens the model list instead of sending a command.
+    if (item.opensModelPicker) {
+      const cleared = clearComposerTrigger(textRef.current, trigger);
+
+      setDraftText(cleared.text);
+      setCaret(cleared.caret);
+      placeCaret(cleared.caret);
+      setModelPickerOpen(true);
+
+      return;
+    }
+
+    if (item.insertion === null) return;
+
+    const next = applyComposerSuggestion(textRef.current, trigger, item.insertion);
+
+    setDraftText(next.text);
+    setCaret(next.caret);
+    placeCaret(next.caret);
+  }
 
   /** Puts a transcript where the caret was, with a space where words would otherwise run together. */
   function insertTranscript(transcript: string) {
@@ -124,6 +211,7 @@ export function Composer(props: ComposerProps) {
     const insert = `${left !== "" && !/\s$/.test(left) ? " " : ""}${transcript}${right !== "" && !/^\s/.test(right) ? " " : ""}`;
 
     setDraftText(left + insert + right);
+    setCaret(start + insert.length);
     placeCaret(start + insert.length);
   }
 
@@ -138,6 +226,7 @@ export function Composer(props: ComposerProps) {
     edit(value) {
       wantFocus.current = true;
       setDraftText(value);
+      setCaret(value.length);
       placeCaret(value.length);
     },
   }));
@@ -180,6 +269,10 @@ export function Composer(props: ComposerProps) {
     setError(null);
     setRefusal(null);
 
+    // The send owns these uploads before it leaves: a thread switch while it is in flight must not
+    // delete what the message is about to reference. A failure puts them back in the draft's hands.
+    const claimed = draft.markSent();
+
     // T3 clears the box as it dispatches; a failure puts the draft back.
     const snapshot = textRef.current;
     setDraftText("");
@@ -198,6 +291,8 @@ export function Composer(props: ComposerProps) {
     setSending(false);
 
     if (!reply.ok) {
+      draft.unmarkSent(claimed);
+
       // A remote action T3 turned down is answered in T3, so the card carries T3's own message.
       if (reply.refusal === true && props.onOpenInT3 !== null) setRefusal({ error: reply.error, grant: reply.grant === true });
       else setError(reply.error);
@@ -230,7 +325,7 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div
-      className="-mt-4 flex shrink-0 flex-col rounded-2xl border border-[var(--t3-border)] bg-[color-mix(in_srgb,var(--t3-popover)_92%,transparent)] backdrop-blur-sm"
+      className="relative -mt-4 flex shrink-0 flex-col rounded-2xl border border-[var(--t3-border)] bg-[color-mix(in_srgb,var(--t3-popover)_92%,transparent)] backdrop-blur-sm"
       onFocus={() => props.onFocusChange(true)}
       onBlur={(event) => {
         const next = event.relatedTarget instanceof Node ? event.relatedTarget : null;
@@ -250,8 +345,21 @@ export function Composer(props: ComposerProps) {
       {props.title !== null && <p className="truncate px-[14px] pt-2 pb-0.5 text-[12px] font-semibold text-t3-fg">{props.title}</p>}
       <div className="flex items-center justify-between gap-2 px-4 pt-2 pb-1 text-[11px] text-t3-muted">
         <span className="flex min-w-0 items-center">{props.context}</span>
-        <span className="shrink-0">{props.statusLabel}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* T3 puts the permission picker on the draft's context strip; the thread's status row has room for it. */}
+          {props.runtimeMode !== null && named !== null && (
+            <RuntimeModePicker
+              current={props.runtimeMode}
+              supported={named.provider.supportedRuntimeModes}
+              policy={catalog.policy}
+              onPick={props.onPickRuntimeMode}
+            />
+          )}
+          {props.statusLabel !== "" && <span>{props.statusLabel}</span>}
+        </span>
       </div>
+
+      {menu.kind !== null && <ComposerMenu menu={menu} onPick={pickSuggestion} />}
 
       {attachments.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 px-4 pt-1 pb-0.5">
@@ -318,7 +426,15 @@ export function Composer(props: ComposerProps) {
         ref={textarea}
         rows={1}
         value={text}
-        onChange={(event) => setDraftText(event.target.value)}
+        onChange={(event) => {
+          const value = event.target.value;
+
+          setDraftText(value);
+          setCaret(event.target.selectionStart ?? value.length);
+        }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
+        onClick={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
+        onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
 
@@ -332,6 +448,37 @@ export function Composer(props: ComposerProps) {
         onKeyDown={(event) => {
           // An IME's Enter confirms the candidate, not the message.
           if (event.nativeEvent.isComposing) return;
+
+          // An open menu takes the keys it needs: arrows move its highlight while it lists rows, Enter
+          // or Tab picks the highlighted row, and Escape closes it alone rather than the panel behind it.
+          // With nothing highlighted, Enter and Tab fall through to the send below.
+          if (menu.kind !== null) {
+            if ((event.key === "ArrowDown" || event.key === "ArrowUp") && menu.items.length > 0) {
+              event.preventDefault();
+              menu.move(event.key === "ArrowDown" ? 1 : -1);
+
+              return;
+            }
+
+            if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) {
+              const item = menu.chosen();
+
+              if (item !== null) {
+                event.preventDefault();
+                pickSuggestion(item);
+
+                return;
+              }
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.dismiss();
+
+              return;
+            }
+          }
 
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
@@ -396,7 +543,37 @@ export function Composer(props: ComposerProps) {
           </>
         )}
         {props.modelSelection !== null && (
-          <ModelPicker threadKey={props.threadKey} current={props.modelSelection} onPick={props.onPickModel} />
+          <ModelPicker
+            catalog={catalog}
+            current={props.modelSelection}
+            open={modelPickerOpen}
+            onOpenChange={setModelPickerOpen}
+            onPick={props.onPickModel}
+          />
+        )}
+        {props.modelTraits && props.modelSelection !== null && (
+          <TraitsPicker
+            threadKey={props.threadKey}
+            model={named?.model ?? null}
+            current={props.modelSelection}
+            onPick={props.onPickModelOptions}
+          />
+        )}
+        {planAllowed && (
+          <button
+            type="button"
+            title={planOn ? "Plan mode: on" : "Plan mode: off"}
+            aria-label={planOn ? "Turn plan mode off" : "Turn plan mode on"}
+            aria-pressed={planOn}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void togglePlan()}
+            className={`flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] transition-colors ${
+              planOn ? "bg-t3-accent text-t3-fg" : "text-t3-muted hover:bg-t3-accent hover:text-t3-fg"
+            }`}
+          >
+            <ListChecks size={12} className="shrink-0" />
+            <span className="shrink-0">Plan</span>
+          </button>
         )}
         {voice.phase === "recording" ? (
           <div

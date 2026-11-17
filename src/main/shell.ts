@@ -1,7 +1,7 @@
 import { generatedIcon } from "../shared/projectIcon";
 import type { PanelModelSelection } from "../shared/panel";
 import type { ProjectIcon, SidebarThread, ThreadState } from "../shared/types";
-import { trimModelSelection } from "./panel";
+import { trimModelSelection, type WireModelSelection } from "./panel";
 
 // Loose views of T3's shell stream (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ShellStreamItem).
 // Only the fields the sidebar reads are typed, so new T3 fields never break decoding.
@@ -30,7 +30,7 @@ interface ProjectShell {
   workspaceRoot: string;
   faviconPath?: string | null;
   projectIcon?: { kind: string; name?: string; color?: string; text?: string; emoji?: string } | null;
-  defaultModelSelection?: { instanceId?: string; provider?: string; model?: string } | null;
+  defaultModelSelection?: WireModelSelection | null;
   pinnedAt?: string | null;
   archivedAt?: string | null;
   updatedAt?: string;

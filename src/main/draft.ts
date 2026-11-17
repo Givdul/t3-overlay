@@ -7,7 +7,7 @@ import type {
   PanelModelSelection,
   PanelProject,
 } from "../shared/panel";
-import { defaultModelSelection, type WireServerConfig } from "./panel";
+import { defaultModelSelection, trimModelSelection, type WireServerConfig } from "./panel";
 import { AuthExpiredError, connect } from "./rpc";
 import type { ShellProject } from "./shell";
 import type { T3Server } from "./t3";
@@ -16,6 +16,9 @@ import type { T3Server } from "./t3";
 // created together with its first turn, in the project's own checkout, and T3 titles it from that message
 // (apps/web/src/components/chat/useComposerSend.ts → packages/client-runtime/src/operations/commands.ts,
 // startThreadTurn → `orchestration.launchThread` with workspaceStrategy "root").
+
+/** T3's permission mode for a thread that names none (packages/contracts/src/providerPolicy.ts, DEFAULT_RUNTIME_MODE). */
+const T3_DEFAULT_RUNTIME_MODE = "full-access";
 
 /** T3's answer to `orchestration.launchThread` (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ThreadLaunchResult). */
 interface WireLaunchReply {
@@ -30,16 +33,64 @@ export interface DraftSource {
 }
 
 /** The draft's projects, with T3's scratch checkout as the picker's "No project", listed last. */
-function draftProjects(source: DraftSource, scratchWorkspaceRoot: string | undefined): PanelProject[] {
+function draftProjects(source: DraftSource, config: WireServerConfig | undefined): PanelProject[] {
+  const serverMode = config?.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE;
+  const serverModel = trimModelSelection(config?.settings?.defaultModelSelection);
+
   const projects = source.projects.map((project) => ({
     projectId: project.projectId,
     title: project.title,
     icon: project.icon,
-    scratch: scratchWorkspaceRoot !== undefined && sameRoot(project.workspaceRoot, scratchWorkspaceRoot),
-    defaultModelSelection: project.defaultModelSelection,
+    scratch: config?.scratchWorkspaceRoot !== undefined && sameRoot(project.workspaceRoot, config.scratchWorkspaceRoot),
+    // Stored project settings lead the project's legacy field, and both lead the server's own default;
+    // once folded, only the stored overrides exist (apps/web/src/hooks/useHandleNewThread.ts →
+    // resolveProjectSettings).
+    defaultModelSelection: projectModelSelection(config, project, serverModel),
+    // A project's own default leads, as its web draft reads it (apps/web/src/hooks/useHandleNewThread.ts).
+    defaultRuntimeMode: config?.settings?.projectSettingsOverrides?.[project.projectId]?.defaultRuntimeMode ?? serverMode,
   }));
 
   return [...projects.filter((project) => !project.scratch), ...projects.filter((project) => project.scratch)];
+}
+
+/**
+ * The model a project's new thread starts on. A stored override wins over the project's legacy field —
+ * even when it stores null, which is a reset — and one T3 would not run is skipped, leaving the server's
+ * default (packages/shared/src/projectSettings.ts, resolveProjectOverrides).
+ */
+function projectModelSelection(
+  config: WireServerConfig | undefined,
+  project: ShellProject,
+  serverModel: PanelModelSelection | null,
+): PanelModelSelection | null {
+  const stored = config?.settings?.projectSettingsOverrides?.[project.projectId];
+  const legacy = config?.settings?.projectSettingsFolded === true ? undefined : (project.defaultModelSelection ?? undefined);
+  const namesOverride = stored !== undefined && Object.hasOwn(stored, "defaultModelSelection");
+  const overridden = namesOverride ? stored.defaultModelSelection : legacy;
+
+  if (overridden === null) return null;
+
+  if (overridden === undefined) return serverModel;
+
+  const selection = trimModelSelection(overridden);
+
+  return selection !== null && modelRunsHere(config, selection) ? selection : serverModel;
+}
+
+/**
+ * Whether T3 would run a stored default: its provider is enabled and ready, and the model is not one the
+ * user hid. Custom models stay visible (packages/shared/src/projectSettings.ts, resolveProjectOverrides).
+ */
+function modelRunsHere(config: WireServerConfig | undefined, selection: PanelModelSelection): boolean {
+  const provider = (config?.providers ?? []).find((candidate) => candidate.instanceId === selection.instanceId);
+
+  if (provider?.enabled !== true || provider.status !== "ready" || provider.availability === "unavailable") return false;
+
+  const hidden = config?.settings?.providerModelPreferences?.[selection.instanceId]?.hiddenModels ?? [];
+
+  if (!hidden.includes(selection.model)) return true;
+
+  return (provider.models ?? []).some((model) => model.slug === selection.model && model.isCustom === true);
 }
 
 /** What the draft composer needs before a thread exists; one short connection reads the server's config. */
@@ -54,7 +105,7 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
       rpc.close();
     }
 
-    const projects = draftProjects(source, config.scratchWorkspaceRoot);
+    const projects = draftProjects(source, config);
 
     const defaultProjectId = projects.some((project) => project.projectId === source.defaultProjectId)
       ? source.defaultProjectId
@@ -64,6 +115,7 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
       projects,
       defaultProjectId,
       defaultModelSelection: defaultModelSelection(config),
+      defaultRuntimeMode: config.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE,
       attachmentUploads: server.attachmentUploads,
       voiceTranscription: server.voiceTranscription,
     };
@@ -80,6 +132,10 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
 export interface CreateThreadInput {
   projectId: string;
   modelSelection: PanelModelSelection;
+  /** The permission mode the draft picked; T3's own default when the draft names none. */
+  runtimeMode?: string;
+  /** "default", or "plan" when the draft's plan toggle is on (providerPolicy.ts, ProviderInteractionMode). */
+  interactionMode?: string;
   text: string;
   attachments: PanelAttachment[];
 }
@@ -96,6 +152,14 @@ export async function createThread(server: T3Server, token: string, input: Creat
     try {
       const config = await rpc.request<WireServerConfig>("server.getConfig", {});
 
+      // A provider that draws no plan toggle always runs in build mode, as T3's mobile outbox resolves
+      // it (apps/mobile/src/state/thread-outbox-model.ts, resolveProviderInteractionMode).
+      const provider = (config.providers ?? []).find(
+        (candidate) => candidate.instanceId === input.modelSelection.instanceId,
+      );
+
+      const interactionMode = provider?.showInteractionModeToggle === false ? "default" : (input.interactionMode ?? "default");
+
       const reply = await rpc.request<WireLaunchReply>("orchestration.launchThread", {
         commandId: randomUUID(),
         creationSource: "web",
@@ -104,10 +168,10 @@ export async function createThread(server: T3Server, token: string, input: Creat
         // T3 names the thread from its first message, as its web composer's draft does.
         generateTitle: true,
         modelSelection: input.modelSelection,
-        // The mode the user's T3 starts threads in; its own default when the server names none
+        // The mode the draft picked, else the user's T3 default; T3's own when the server names none
         // (packages/contracts/src/providerPolicy.ts, DEFAULT_RUNTIME_MODE).
-        runtimeMode: config.settings?.defaultRuntimeMode ?? "full-access",
-        interactionMode: "default",
+        runtimeMode: input.runtimeMode ?? config.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE,
+        interactionMode,
         workspaceStrategy: { type: "root" },
         initialMessage: { messageId: randomUUID(), text, attachments: input.attachments },
       });

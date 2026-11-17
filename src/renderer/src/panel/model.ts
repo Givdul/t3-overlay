@@ -77,7 +77,6 @@ function applyMessage(state: PanelState, message: PanelMessage): PanelState {
 const IGNORED_EVENTS = new Set([
   "message.updated",
   "node.updated",
-  "plan.updated",
   "provider-turn.updated",
   "provider-thread.updated",
   "provider-session.attached",
@@ -108,6 +107,15 @@ function applyEvent(state: PanelState, event: PanelEvent): PanelState {
     case "run.created":
     case "run.updated":
       return applyRun(next, view, event.payload);
+    case "plan.updated": {
+      const plan = event.payload.plan;
+
+      if (plan === undefined) return next;
+
+      const plans = upsertBy(view.plans, plan, (candidate) => candidate.id === plan.id);
+
+      return { ...next, view: { ...view, plans } };
+    }
     case "run-attempt.created":
     case "run-attempt.updated":
       return applyAttempt(next, view, event.payload);
@@ -209,6 +217,11 @@ function applyThread(state: PanelState, view: PanelView, payload: PanelEventPayl
 
   // T3 changing the thread's model from its own composer lands here too.
   if (payload.modelSelection !== undefined) thread = { ...thread, modelSelection: payload.modelSelection };
+
+  // So do its permission mode and plan mode, which T3's own composer can change on this thread.
+  if (payload.runtimeMode !== undefined) thread = { ...thread, runtimeMode: payload.runtimeMode };
+
+  if (payload.interactionMode !== undefined) thread = { ...thread, interactionMode: payload.interactionMode };
 
   return thread === view.thread ? state : { ...state, view: { ...view, thread } };
 }

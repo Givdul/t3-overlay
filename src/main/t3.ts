@@ -10,6 +10,9 @@ import { GRANT_CLIENT_NAME } from "./mcpAuth";
 
 const T3_HOME = join(homedir(), ".t3");
 
+/** A descriptor read that never answers would hold up the caller's reconnect; the socket open has the same budget. */
+const DESCRIPTOR_TIMEOUT_MS = 15_000;
+
 export interface T3Server {
   origin: string;
   port: number;
@@ -47,7 +50,7 @@ export async function readServer(): Promise<T3Server | null> {
     // would receive the session token.
     if (!isAlive(raw.pid)) return null;
 
-    const response = await fetch(`${raw.origin}/.well-known/t3/environment`);
+    const response = await fetch(`${raw.origin}/.well-known/t3/environment`, { signal: AbortSignal.timeout(DESCRIPTOR_TIMEOUT_MS) });
 
     if (!response.ok) return null;
 

@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { PanelItem } from "../../../shared/panel";
 
-// One expanded command row's output. A running row streams from T3 while it is open
+// One expanded command row's output, from T3's own route
 // (packages/contracts/src/orchestrationV2.ts, subscribeCommandOutput): T3 sends a bounded tail as a
-// `replace` frame and appends after it, then ends the stream once the command settles
-// (apps/server/src/orchestration-v2/CommandOutputHub.ts). A finished row, or a server without the
-// capability, asks `getTurnItem` for the whole body when the row opens, as before.
+// `replace` frame and appends after it, then ends the stream once the command settles. A finished row
+// gets its persisted output as one final frame (apps/server/src/orchestration-v2/CommandOutputHub.ts), so
+// the row follows T3's own tail limit rather than the panel's event cap.
 
 export interface CommandOutputState {
   /** The text to draw; null when the command has written none yet. */
@@ -26,25 +26,20 @@ export function useCommandOutput(
   item: PanelItem,
   open: boolean,
   streaming: boolean,
-  running: boolean,
   /** The panel's connection epoch; a new socket reopens this row's stream. */
   connection: number,
 ): CommandOutputState {
-  // The running flag at this render: the effect below opens a stream only for a row that is running
-  // then. A later settle must not tear it down, because T3's final frame carries the command's whole tail
-  // and can arrive just after the item's own event.
-  const runningRef = useRef(running);
-  runningRef.current = running;
   const [live, setLive] = useState<LiveOutput | null>(null);
   const [full, setFull] = useState<PanelItem | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // The live stream: open while the row is open and its command still runs. Collapsing ends it; T3 ends
-  // it itself when the command settles, after its final frame. The stream lives on one socket, so a
-  // reconnect (a new `connection`) opens a fresh one, whose first frame is the whole tail again.
+  // T3's command-output route serves a finished command too: its one frame is the persisted output,
+  // tailed by T3 itself (apps/server/src/orchestration-v2/CommandOutputHub.ts, subscribe). The row opens
+  // the stream while it is expanded; collapsing ends it. The stream lives on one socket, so a reconnect
+  // (a new `connection`) opens a fresh one, whose first frame is the whole tail again.
   useEffect(() => {
     // No socket is live before T3's first "live"; the fallback below covers a row opened meanwhile.
-    if (!open || !streaming || !runningRef.current || connection === 0) return;
+    if (!open || !streaming || connection === 0) return;
 
     setError(null);
 
@@ -76,16 +71,15 @@ export function useCommandOutput(
     return () => {
       cancelled = true;
       stopListening();
-      // The closed row keeps no tail: reopening reads a fresh one, live or from getTurnItem. A reconnect
-      // clears it too, so a row whose command finished meanwhile falls back to the final body.
+      // The closed row keeps no tail: reopening reads a fresh one, live or from getTurnItem.
       setLive(null);
       void window.overlay.panel({ type: "unsubscribeCommandOutput", itemId: item.id });
     };
   }, [open, streaming, item.id, connection]);
 
-  // The whole body, for a finished row or a server that has no live stream: today's behavior.
+  // The whole body, for a server with no live command-output route.
   useEffect(() => {
-    if (!open || (streaming && running) || live !== null || error !== null || item.outputOmitted !== true) return;
+    if (!open || streaming || live !== null || error !== null || item.outputOmitted !== true) return;
 
     let cancelled = false;
     void window.overlay.panel({ type: "turnItem", itemId: item.id }).then((reply) => {
@@ -98,7 +92,7 @@ export function useCommandOutput(
     return () => {
       cancelled = true;
     };
-  }, [open, streaming, running, live, error, item.id, item.outputOmitted]);
+  }, [open, streaming, live, error, item.id, item.outputOmitted]);
 
   return {
     output: live?.text ?? full?.output ?? item.output ?? null,

@@ -5,20 +5,33 @@ import type {
   PanelAttachment,
   PanelAttachmentReply,
   PanelAttachmentUploads,
+  PanelAttachmentUrlReply,
   PanelAttempt,
   PanelCommandOutput,
+  PanelEntriesReply,
   PanelEventPayload,
+  PanelFailure,
   PanelFileChange,
   PanelForceStopReply,
   PanelItem,
   PanelItemRef,
   PanelItemReply,
+  PanelManagedPolicy,
   PanelMessage,
   PanelMessageContext,
   PanelModel,
+  PanelModelOption,
+  PanelModelOptionChoice,
+  PanelModelOptionDescriptor,
   PanelModelProvider,
+  PanelModelSelectOption,
   PanelModelSelection,
   PanelModelsReply,
+  PanelModelToggleOption,
+  PanelPlan,
+  PanelProjectEntry,
+  PanelProviderCommand,
+  PanelProviderSkill,
   PanelQuestion,
   PanelQueuedMessage,
   PanelReply,
@@ -102,6 +115,8 @@ interface WireItem {
   attachments?: WireAttachment[];
   streaming?: boolean;
   markdown?: string;
+  /** The plan a proposed_plan row draws (orchestrationV2.ts, proposed_plan.planId). */
+  planId?: string;
   steps?: WireTodoStep[];
   input?: string | object;
   output?: string | object;
@@ -153,11 +168,39 @@ interface WireMessage {
   context?: PanelMessageContext;
 }
 
+/** One option value as T3 stores it (packages/contracts/src/model.ts, ProviderOptionSelection). */
+interface WireOptionSelection {
+  id?: string;
+  value?: string | boolean;
+}
+
+/** One choice of a model option (packages/contracts/src/model.ts, ProviderOptionChoice). */
+interface WireOptionChoice {
+  id?: string;
+  label?: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
+/** One option a model declares (packages/contracts/src/model.ts, ProviderOptionDescriptor). */
+interface WireOptionDescriptor {
+  id?: string;
+  label?: string;
+  description?: string;
+  type?: string;
+  options?: WireOptionChoice[];
+  currentValue?: string | boolean;
+  promptInjectedValues?: string[];
+  role?: string;
+}
+
 /** A thread's model (packages/contracts/src/modelSelection.ts); `provider` is the older spelling of `instanceId`. */
-interface WireModelSelection {
+export interface WireModelSelection {
   instanceId?: string;
   provider?: string;
   model?: string;
+  /** T3 sends an array; an older server sent one object keyed by option id. */
+  options?: WireOptionSelection[] | Record<string, string | boolean>;
 }
 
 interface WireThread {
@@ -165,6 +208,8 @@ interface WireThread {
   projectId?: string;
   title?: string;
   modelSelection?: WireModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
 }
 
 interface WireRun {
@@ -193,12 +238,22 @@ interface WireRow {
   item?: WireItem;
 }
 
+/** One plan the thread has proposed (packages/contracts/src/orchestrationV2.ts, OrchestrationV2PlanArtifact). */
+interface WirePlan {
+  id?: string;
+  kind?: string;
+  status?: string;
+  /** A proposed plan's own text, which the Implement follow-up sends back (proposed_plan.markdown). */
+  markdown?: string;
+}
+
 interface WireProjection {
   thread?: WireThread;
   messages?: WireMessage[];
   runs?: WireRun[];
   attempts?: WireAttempt[];
   runtimeRequests?: WireRuntimeRequest[];
+  plans?: WirePlan[];
   visibleTurnItems?: WireRow[];
   turnItems?: WireItem[];
 }
@@ -216,6 +271,8 @@ interface WireEventPayload extends WireItem {
   rootNodeId?: string;
   responseCapability?: { type?: string };
   modelSelection?: WireModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
 }
 
 interface WireTurnItemReply {
@@ -238,6 +295,12 @@ interface WireUploadReply {
   expiresAt?: number;
 }
 
+/** `assets.createUrl`'s answer (packages/contracts/src/assets.ts, AssetCreateUrlResult). */
+interface WireAssetUrlReply {
+  relativeUrl?: string;
+  expiresAt?: number;
+}
+
 /** One model a provider offers (packages/contracts/src/server.ts, ServerProviderModel). */
 interface WireProviderModel {
   slug?: string;
@@ -248,6 +311,34 @@ interface WireProviderModel {
   isCustom?: boolean;
   isLegacy?: boolean;
   isDefault?: boolean;
+  /** The options the model declares, e.g. its reasoning effort (packages/contracts/src/model.ts, ModelCapabilities). */
+  capabilities?: { optionDescriptors?: WireOptionDescriptor[] } | null;
+}
+
+/** One command a provider expands itself (packages/contracts/src/server.ts, ServerProviderSlashCommand). */
+interface WireSlashCommand {
+  name?: string;
+  description?: string;
+  input?: { hint?: string };
+}
+
+/** One skill a provider offers (packages/contracts/src/server.ts, ServerProviderSkill). */
+interface WireSkill {
+  name?: string;
+  description?: string;
+  shortDescription?: string;
+  displayName?: string;
+  scope?: string;
+  enabled?: boolean;
+  /** T3's `user-invocable: false`: only the agent can start it, so its composer hides it. */
+  userInvocable?: boolean;
+}
+
+/** A provider's scan of one checkout (server.ts, ServerProviderWorkspaceSnapshot). */
+interface WireWorkspaceSnapshot {
+  cwd?: string;
+  slashCommands?: WireSlashCommand[];
+  skills?: WireSkill[];
 }
 
 /** A provider and its models (packages/contracts/src/server.ts, ServerProvider). */
@@ -260,7 +351,32 @@ interface WireProvider {
   status?: string;
   /** "unavailable" when this machine cannot run the provider at all. */
   availability?: string;
+  /** T3 draws a plan toggle for this provider's threads. */
+  showInteractionModeToggle?: boolean;
+  /** The permission modes the provider supports; absent means every one. */
+  supportedRuntimeModes?: string[];
   models?: WireProviderModel[];
+  /** The commands and skills its composer offers, and those it found in each checkout. */
+  slashCommands?: WireSlashCommand[];
+  skills?: WireSkill[];
+  workspaceSnapshots?: WireWorkspaceSnapshot[];
+}
+
+/** One file or folder `projects.searchEntries` answers with (packages/contracts/src/project.ts, ProjectEntry). */
+interface WireProjectEntry {
+  path?: string;
+  kind?: string;
+}
+
+/** `projects.searchEntries`'s answer (project.ts, ProjectSearchEntriesResult). */
+interface WireSearchReply {
+  entries?: WireProjectEntry[];
+}
+
+/** The administrator's policy, which caps the permission modes a thread may run (packages/contracts/src/managedPolicy.ts, ManagedPolicySummary). */
+interface WireManagedPolicy {
+  organization?: string;
+  limits?: { maxRuntimeMode?: string };
 }
 
 /** The slice of `server.getConfig` the composer's model picker and the new-thread draft read (packages/contracts/src/server.ts). */
@@ -271,7 +387,13 @@ export interface WireServerConfig {
     providerModelPreferences?: Record<string, { hiddenModels?: string[] }>;
     defaultModelSelection?: WireModelSelection | null;
     defaultRuntimeMode?: string;
+    /** Once folded, project settings live only in the overrides, as T3's own resolver treats them. */
+    projectSettingsFolded?: boolean;
+    /** A project's own settings override the server's, as its web draft's runtime mode reads them. */
+    projectSettingsOverrides?: Record<string, { defaultRuntimeMode?: string; defaultModelSelection?: WireModelSelection | null }>;
   };
+  /** Present when an administrator's policy manages this environment. */
+  managedPolicy?: WireManagedPolicy | null;
   scratchWorkspaceRoot?: string;
 }
 
@@ -281,14 +403,25 @@ interface WireForceStopResult {
   sharedWithThreadIds?: string[];
 }
 
-/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, the provider catalog and a force stop. */
-type WireReply = WireProjection | WireTurnItemReply | WireUploadReply | WireServerConfig | WireForceStopResult;
+/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, an asset URL, the provider catalog, a file search and a force stop. */
+type WireReply =
+  | WireProjection
+  | WireTurnItemReply
+  | WireUploadReply
+  | WireAssetUrlReply
+  | WireServerConfig
+  | WireForceStopResult
+  | WireSearchReply;
 
 export interface PanelOptions {
   server: T3Server;
   token: string;
   /** This PC's environment id; a thread from anywhere else is main/remote.ts's to read. */
   environmentId: string;
+  /** The checkout a project runs in, which its composer's `@` menu searches; null when T3 lists none. */
+  projectRoot: (projectId: string) => string | null;
+  /** Re-reads T3's environment descriptor, so an upgraded or restarted server's capabilities are not stale. */
+  refreshServer?: () => Promise<T3Server | null>;
   onMessage: (message: PanelMessage) => void;
   onAuthExpired: () => void;
 }
@@ -296,18 +429,43 @@ export interface PanelOptions {
 export interface Panel {
   /** Starts or stops the subscription. The same target twice keeps the live one. */
   setTarget(target: ThreadRef | null): void;
-  command(command: PanelThreadCommand): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply>;
+  command(
+    command: PanelThreadCommand,
+  ): Promise<
+    | PanelReply
+    | PanelItemReply
+    | PanelAttachmentReply
+    | PanelAttachmentUrlReply
+    | PanelModelsReply
+    | PanelEntriesReply
+    | PanelVoiceReply
+    | PanelForceStopReply
+  >;
   stop(): void;
 }
 
 /** Long tool output is fetched per row instead; an event stream must not carry megabytes. */
 const OUTPUT_LIMIT = 8000;
 
+/**
+ * T3's own follow-up text when a plan is implemented: this prefix, then the plan's markdown as the
+ * message the agent reads. The reference only names the plan T3 completes (apps/web/src/proposedPlan.ts,
+ * PLAN_IMPLEMENTATION_PROMPT_PREFIX; apps/server/src/orchestration-v2/Orchestrator.ts sends `command.text`).
+ */
+const PLAN_IMPLEMENTATION_PROMPT = "PLEASE IMPLEMENT THIS PLAN:\n";
+
+/** How many files and folders the composer's `@` menu asks T3 for (apps/web/src/state/queries.ts, COMPOSER_PATH_SEARCH_LIMIT). */
+const COMPOSER_SEARCH_LIMIT = 80;
+
 /** An event this build cannot fold in re-reads the projection once the burst settles. */
 const STALE_DELAY_MS = 500;
 
 export function startPanel(options: PanelOptions): Panel {
   let target: ThreadRef | null = null;
+  /** T3's descriptor as last read; a reconnect re-reads it so an upgraded server's flags are not stale. */
+  let server = options.server;
+  /** Set by a dropped socket's resubscribe: only then is the descriptor re-read, never on a thread switch. */
+  let refreshOnReconnect = false;
   let rpc: T3Rpc<WireReply> | null = null;
   let stopStream: (() => void) | null = null;
   /** The last sequence main forwarded: a resubscribe resumes after it. */
@@ -354,6 +512,8 @@ export function startPanel(options: PanelOptions): Panel {
 
     if (retryTimer !== null) clearTimeout(retryTimer);
     retryTimer = null;
+
+    refreshOnReconnect = false;
   }
 
   /** Ends every live command-output stream; a collapsed row or a thread switch means none is wanted. */
@@ -364,6 +524,22 @@ export function startPanel(options: PanelOptions): Panel {
   }
 
   /**
+   * T3 may have been upgraded or restarted on the same origin since the descriptor was read. Re-reading it
+   * keeps the capability flags the next snapshot carries current; another origin is main's to reconnect.
+   */
+  async function refreshServer() {
+    if (options.refreshServer === undefined) return;
+
+    try {
+      const next = await options.refreshServer();
+
+      if (next !== null && next.origin === server.origin && next.environmentId === server.environmentId) server = next;
+    } catch (error) {
+      console.warn("[panel] re-reading the descriptor failed", error);
+    }
+  }
+
+  /**
    * One expanded running row's output. T3's hub sends a bounded tail (`replace`) and then appends, and ends
    * the stream itself when the command settles (apps/server/src/orchestration-v2/CommandOutputHub.ts).
    */
@@ -371,7 +547,7 @@ export function startPanel(options: PanelOptions): Panel {
     if (rpc === null) return refuse("T3 is not connected");
 
     // T3's own clients read the same capability; an older server has no such route.
-    if (!options.server.commandOutputStreaming) return refuse("This T3 server does not stream command output");
+    if (!server.commandOutputStreaming) return refuse("This T3 server does not stream command output");
 
     if (commandOutputs.has(itemId)) return { ok: true };
 
@@ -413,6 +589,7 @@ export function startPanel(options: PanelOptions): Panel {
     if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) backoff.reset();
 
     connectedAt = null;
+    refreshOnReconnect = true;
     const delay = backoff.nextDelay();
     console.warn(`[panel] reconnecting in ${delay}ms after ${threadId}`);
     options.onMessage({ kind: "status", status: "connecting" });
@@ -427,10 +604,19 @@ export function startPanel(options: PanelOptions): Panel {
     generation = current;
     options.onMessage({ kind: "status", status: "connecting" });
 
+    // A dropped socket lands here: T3's flags may have changed with its server. A thread switch keeps
+    // the descriptor, so it costs neither the runtime file read nor the fetch.
+    if (refreshOnReconnect) {
+      refreshOnReconnect = false;
+      await refreshServer();
+    }
+
+    if (current !== generation) return;
+
     let connection: T3Rpc<WireReply>;
 
     try {
-      connection = await connect<WireReply>(options.server, options.token);
+      connection = await connect<WireReply>(server, options.token);
     } catch (error) {
       if (current !== generation) return;
 
@@ -480,10 +666,10 @@ export function startPanel(options: PanelOptions): Panel {
       case "snapshot": {
         const next = trimView(
           item.projection,
-          options.server.attachmentUploads,
-          options.server.voiceTranscription,
-          options.server.threadForceStop,
-          options.server.commandOutputStreaming,
+          server.attachmentUploads,
+          server.voiceTranscription,
+          server.threadForceStop,
+          server.commandOutputStreaming,
         );
 
         if (next === null) return;
@@ -527,10 +713,10 @@ export function startPanel(options: PanelOptions): Panel {
 
       const next = trimView(
         projection,
-        options.server.attachmentUploads,
-        options.server.voiceTranscription,
-        options.server.threadForceStop,
-        options.server.commandOutputStreaming,
+        server.attachmentUploads,
+        server.voiceTranscription,
+        server.threadForceStop,
+        server.commandOutputStreaming,
       );
       // The reader may have switched threads while this read was in flight.
       const current = target;
@@ -553,7 +739,7 @@ export function startPanel(options: PanelOptions): Panel {
     }, STALE_DELAY_MS);
   }
 
-  function refuse(reason: string): PanelReply {
+  function refuse(reason: string): PanelFailure {
     return { ok: false, error: reason };
   }
 
@@ -570,7 +756,7 @@ export function startPanel(options: PanelOptions): Panel {
   async function withRpc<T>(use: (connection: T3Rpc<WireReply>) => Promise<T>): Promise<T> {
     if (rpc !== null) return use(rpc);
 
-    const connection = await connect<WireReply>(options.server, options.token);
+    const connection = await connect<WireReply>(server, options.token);
 
     try {
       return await use(connection);
@@ -579,27 +765,69 @@ export function startPanel(options: PanelOptions): Panel {
     }
   }
 
+  /**
+   * `server.getConfig` read once: the providers a thread can switch to, the commands and skills each
+   * offers, the options each model declares, and the policy that caps its threads' permission modes.
+   */
+  async function readCatalog(projectId: string | undefined): Promise<PanelModelsReply> {
+    const cwd = projectId === undefined ? null : options.projectRoot(projectId);
+    const config = await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}));
+
+    return { ok: true, providers: trimModels(config, cwd), policy: trimPolicy(config) };
+  }
+
+  /** The project's matching files and folders, for the composer's `@` menu. */
+  async function readEntries(projectId: string, query: string): Promise<PanelEntriesReply> {
+    const cwd = options.projectRoot(projectId);
+
+    if (cwd === null) return refuse("T3 does not list this thread's project here");
+
+    // T3's own search bounds: its composer asks for these and cuts a lone surrogate off the query
+    // (apps/web/src/state/queries.ts, useProjectPathSearch).
+    const reply = await withRpc((connection) =>
+      connection.request<WireSearchReply>("projects.searchEntries", {
+        cwd,
+        query: query.slice(0, 256).replace(/[\uD800-\uDBFF]$/, ""),
+        limit: COMPOSER_SEARCH_LIMIT,
+      }),
+    );
+
+    const entries: PanelProjectEntry[] = (reply.entries ?? []).flatMap((entry) =>
+      entry.path === undefined || entry.path === "" ? [] : [{ path: entry.path, kind: entry.kind ?? "file" }],
+    );
+
+    return { ok: true, entries };
+  }
+
   async function command(
     next: PanelThreadCommand,
-  ): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply> {
+  ): Promise<
+    | PanelReply
+    | PanelItemReply
+    | PanelAttachmentReply
+    | PanelAttachmentUrlReply
+    | PanelModelsReply
+    | PanelEntriesReply
+    | PanelVoiceReply
+    | PanelForceStopReply
+  > {
     try {
       // The draft composer's commands: the server answers them before any thread exists.
       switch (next.type) {
         // Voice is plain HTTP to the same server, so a reconnecting thread socket does not stop it.
         case "voiceStatus":
-          return await voiceStatus(options.server, options.token);
+          return await voiceStatus(server, options.token);
         case "transcribe":
           // The audio crosses the IPC boundary as an ArrayBuffer; anything else has no samples to send.
           if (!(next.pcm instanceof ArrayBuffer)) return refuse("That recording could not be read");
 
-          return await transcribePcm(options.server, options.token, next.pcm);
+          return await transcribePcm(server, options.token, next.pcm);
         case "models":
-          return {
-            ok: true,
-            providers: trimModels(await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}))),
-          };
+          return await readCatalog(next.projectId);
+        case "entries":
+          return await readEntries(next.projectId, next.query);
         case "attach": {
-          const capability = options.server.attachmentUploads;
+          const capability = server.attachmentUploads;
 
           if (capability === null) return refuse("This T3 server does not accept attachments");
 
@@ -628,7 +856,7 @@ export function startPanel(options: PanelOptions): Panel {
             return refuse("T3 did not mint an upload slot");
           }
 
-          const uploaded = await fetch(new URL(minted.relativeUrl, options.server.origin), {
+          const uploaded = await fetch(new URL(minted.relativeUrl, server.origin), {
             method: "POST",
             headers: { "content-type": mimeType },
             body: data,
@@ -646,6 +874,25 @@ export function startPanel(options: PanelOptions): Panel {
 
           return { ok: true, attachment };
         }
+
+        case "attachmentUrl": {
+          const reply = await withRpc((connection) =>
+            connection.request<WireAssetUrlReply>("assets.createUrl", {
+              resource: { _tag: "attachment", attachmentId: next.attachmentId },
+            }),
+          );
+
+          if (reply.relativeUrl === undefined) return refuse("T3 did not return an asset URL");
+
+          // T3's own web client puts this signed URL in an `<img>`; the bearer token never leaves main.
+          return { ok: true, url: new URL(reply.relativeUrl, server.origin).toString() };
+        }
+
+        case "releaseAttachment":
+          // T3 deletes a pending upload when its composer drops it; a sent one is the thread's.
+          await withRpc((connection) => connection.command("attachments.delete", { attachmentId: next.attachmentId }));
+
+          return { ok: true };
       }
 
       const thread = target;
@@ -685,7 +932,7 @@ export function startPanel(options: PanelOptions): Panel {
           return { ok: true };
         case "forceStop": {
           // T3 hides Force stop without this capability, and an older server has no such route.
-          if (!options.server.threadForceStop) return refuse("This T3 server cannot force stop a run");
+          if (!server.threadForceStop) return refuse("This T3 server cannot force stop a run");
 
           const result = await rpc.request<WireForceStopResult>("orchestration.forceStopThread", {
             threadId: thread.threadId,
@@ -726,16 +973,68 @@ export function startPanel(options: PanelOptions): Panel {
           return { ok: true };
         }
 
-        case "setModel":
-          await dispatch({
-            type: "thread.model-selection.set",
-            threadId: thread.threadId,
-            modelSelection: { instanceId: next.instanceId, model: next.model },
-          });
+        case "setModel": {
+          const modelSelection: Extract<ThreadCommand, { type: "thread.model-selection.set" }>["modelSelection"] = {
+            instanceId: next.instanceId,
+            model: next.model,
+          };
+
+          // A traits pick writes the model's own options; a plain model switch leaves them to the model.
+          if (next.options !== undefined) modelSelection.options = next.options;
+
+          await dispatch({ type: "thread.model-selection.set", threadId: thread.threadId, modelSelection });
           // The next turn reads the thread's selection: re-read it so the composer shows the new model.
           await pushSnapshot();
 
           return { ok: true };
+        }
+
+        case "setRuntimeMode":
+          // T3's own command (packages/client-runtime/src/operations/commands.ts, setThreadRuntimeMode).
+          await dispatch({ type: "thread.runtime-mode.set", threadId: thread.threadId, runtimeMode: next.runtimeMode });
+
+          await pushSnapshot();
+
+          return { ok: true };
+        case "setInteractionMode":
+          await dispatch({
+            type: "thread.interaction-mode.set",
+            threadId: thread.threadId,
+            interactionMode: next.interactionMode,
+          });
+
+          await pushSnapshot();
+
+          return { ok: true };
+        case "implementPlan": {
+          // The view can still be the thread the reader left: only this thread's plan and mode count.
+          const current = view?.thread.id === thread.threadId ? view : null;
+          const plan = current?.plans.find((candidate) => candidate.id === next.planId);
+
+          // The plan's own markdown is the message; the reference below only tells T3 what it completes.
+          if (plan?.markdown === undefined) return refuse("T3 has no plan to implement");
+
+          // T3 leaves plan mode for the implementing turn (apps/web/src/hooks/useHandleNewThread.ts,
+          // persistThreadSettingsForNextTurn writes the mode before the message).
+          if (current?.thread.interactionMode === "plan") {
+            await dispatch({ type: "thread.interaction-mode.set", threadId: thread.threadId, interactionMode: "default" });
+          }
+
+          await dispatch({
+            type: "message.dispatch",
+            threadId: thread.threadId,
+            messageId: randomUUID(),
+            text: `${PLAN_IMPLEMENTATION_PROMPT}${plan.markdown}`,
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            dispatchMode: { type: "start_immediately" },
+            sourcePlanRef: { threadId: thread.threadId, planId: next.planId },
+          });
+          await pushSnapshot();
+
+          return { ok: true };
+        }
         case "respond":
           await dispatch({
             type: "runtime-request.respond",
@@ -762,7 +1061,7 @@ export function startPanel(options: PanelOptions): Panel {
             itemId: next.itemId,
           });
 
-          const item = trimItem(result.item);
+          const item = trimItem(result.item, true);
 
           return item === null ? { ok: false, error: "T3 has no such turn item" } : { ok: true, item };
         }
@@ -800,7 +1099,7 @@ function sameTarget(a: ThreadRef | null, b: ThreadRef | null): boolean {
 // ---------------------------------------------------------------- trimming
 
 /** A turn item with only the fields the panel draws, or null when T3 sent no usable item. */
-export function trimItem(raw: WireItem | undefined): PanelItem | null {
+export function trimItem(raw: WireItem | undefined, completeOutput = false): PanelItem | null {
   if (raw?.id === undefined || raw.type === undefined) return null;
 
   const trimmed: PanelItem = {
@@ -825,6 +1124,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       break;
     case "proposed_plan":
       trimmed.markdown = raw.markdown;
+      trimmed.planId = raw.planId;
       break;
     case "todo_list":
       trimmed.steps = trimSteps(raw.steps);
@@ -834,7 +1134,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       // (OrchestrationV2CommandExecutionTurnItem); the union exists for the dynamic tool branch.
       const command = raw as WireCommandItem;
       trimmed.input = command.input;
-      trimmed.output = trimText(command.output);
+      trimmed.output = trimText(command.output, completeOutput);
       trimmed.outputOmitted = command.outputOmitted === true || trimmed.output !== command.output;
       trimmed.exitCode = raw.exitCode;
       trimmed.outputIndicatesFailure = raw.outputIndicatesFailure;
@@ -849,7 +1149,7 @@ export function trimItem(raw: WireItem | undefined): PanelItem | null {
       trimmed.toolInput = tool.input === undefined ? undefined : JSON.stringify(tool.input, null, 2);
       // A tool's output is arbitrary JSON on this build (delegation answers are objects).
       const output = tool.output === undefined ? undefined : JSON.stringify(tool.output, null, 2);
-      trimmed.output = trimText(output);
+      trimmed.output = trimText(output, completeOutput);
       trimmed.outputOmitted = tool.outputOmitted === true || trimmed.output !== output;
       break;
     }
@@ -927,8 +1227,8 @@ function copyCommon(raw: WireItem, trimmed: PanelItem) {
 }
 
 /** Tool output over the limit is fetched per row from `getTurnItem`, which carries the full body. */
-function trimText(text: string | undefined): string | undefined {
-  if (text === undefined || text.length <= OUTPUT_LIMIT) return text;
+function trimText(text: string | undefined, complete = false): string | undefined {
+  if (complete || text === undefined || text.length <= OUTPUT_LIMIT) return text;
 
   return `${text.slice(0, OUTPUT_LIMIT)}\n…`;
 }
@@ -1108,18 +1408,40 @@ export function trimView(
     return ref === null ? [] : [ref];
   });
 
+  const plans = (raw.plans ?? []).flatMap((plan) => {
+    const trimmed = trimPlan(plan);
+
+    return trimmed === null ? [] : [trimmed];
+  });
+
   return {
-    thread: { id: thread.id, projectId: thread.projectId, title: thread.title ?? "", modelSelection: trimModelSelection(thread.modelSelection) },
+    thread: {
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title ?? "",
+      modelSelection: trimModelSelection(thread.modelSelection),
+      runtimeMode: thread.runtimeMode ?? null,
+      interactionMode: thread.interactionMode ?? null,
+    },
     runs,
     attempts,
     runtimeRequests,
     rows,
     items,
     queued,
+    plans,
     attachmentUploads,
     voiceTranscription,
     threadForceStop,
     commandOutputStreaming,
+    // This thread is on this PC's server, whose socket takes a model selection from the panel.
+    modelTraits: true,
+    // Its composer asks this socket for the provider's commands and the project's files, as T3's does.
+    composerMenus: true,
+    // A plan this thread proposed can be sent back through this socket with T3's plan reference.
+    planImplementation: true,
+    // Its images are minted through this socket as T3's own web client mints them.
+    imagePreviews: true,
   };
 }
 
@@ -1131,6 +1453,13 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
     const item = trimItem(payload);
 
     return item === null ? {} : { item };
+  }
+
+  // The plan artifact itself is the payload, so its status (completed once implemented) rides here.
+  if (type === "plan.updated") {
+    const plan = trimPlan(payload);
+
+    return plan === null ? {} : { plan };
   }
 
   const trimmed: PanelEventPayload = {};
@@ -1153,24 +1482,146 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
 
   if (modelSelection !== null) trimmed.modelSelection = modelSelection;
 
+  // T3's own composer switching a thread's permission or plan mode lands here too.
+  if (payload.runtimeMode !== undefined) trimmed.runtimeMode = payload.runtimeMode;
+
+  if (payload.interactionMode !== undefined) trimmed.interactionMode = payload.interactionMode;
+
   return trimmed;
 }
 
-/** A thread's model, or null when the nightly names none: the composer then hides its picker. */
+/** One plan of a thread, or null when the artifact names no id: a row cannot implement it. */
+function trimPlan(raw: WirePlan | undefined): PanelPlan | null {
+  if (raw?.id === undefined) return null;
+
+  const plan: PanelPlan = { id: raw.id, kind: raw.kind ?? "", status: raw.status ?? "" };
+
+  // The Implement follow-up sends a proposed plan's own markdown back; a todo list has none.
+  if (raw.markdown !== undefined) plan.markdown = raw.markdown;
+
+  return plan;
+}
+
+/**
+ * A thread's model, or null when the nightly names none: the composer then hides its picker.
+ * `options` hold the model's own values, e.g. its reasoning effort (packages/contracts/src/model.ts,
+ * ProviderOptionSelection); an older server sent one object keyed by option id instead of an array.
+ */
 export function trimModelSelection(raw: WireModelSelection | null | undefined): PanelModelSelection | null {
   const instanceId = raw?.instanceId ?? raw?.provider;
 
   if (instanceId === undefined || raw?.model === undefined) return null;
 
-  return { instanceId, model: raw.model };
+  const selection: PanelModelSelection = { instanceId, model: raw.model };
+  const options = trimModelOptions(raw.options);
+
+  if (options !== undefined && options.length > 0) selection.options = options;
+
+  return selection;
+}
+
+/** The option values a model selection carries; the legacy object spelling is read as the array it became. */
+function trimModelOptions(raw: WireModelSelection["options"]): PanelModelOption[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+
+  const entries: WireOptionSelection[] = Array.isArray(raw)
+    ? raw
+    : Object.entries(raw).map(([id, value]) => ({ id, value }));
+
+  // An option without an id, or without a value this build can send, is not one it may write back.
+  const options = entries.flatMap((entry) =>
+    entry.id === undefined || entry.id === "" || entry.value === undefined ? [] : [{ id: entry.id, value: entry.value }],
+  );
+
+  return options.length > 0 ? options : undefined;
 }
 
 /**
- * The providers a thread can switch to and their models. T3's picker offers a provider only while it is
- * on and ready, and hides the models the user hid (apps/web/src/providerInstances.ts,
- * apps/web/src/modelSelection.ts); custom models stay selectable, as they do there.
+ * The options a model declares, with the thread's own values on them: the menu draws each list and toggle
+ * with the value its model would run (apps/web/src/components/chat/TraitsPicker.tsx, getSelectedTraits;
+ * packages/shared/src/model.ts, getProviderOptionDescriptors).
  */
-export function trimModels(config: WireServerConfig | undefined): PanelModelProvider[] {
+function trimModelOptionDescriptors(raw: WireOptionDescriptor[] | undefined): PanelModelOptionDescriptor[] {
+  const descriptors: PanelModelOptionDescriptor[] = [];
+
+  for (const descriptor of raw ?? []) {
+    if (descriptor.id === undefined || descriptor.id === "" || descriptor.label === undefined) continue;
+
+    if (descriptor.type === "boolean") {
+      const toggle: PanelModelToggleOption = {
+        type: "boolean",
+        id: descriptor.id,
+        label: descriptor.label,
+      };
+
+      if (descriptor.description !== undefined) toggle.description = descriptor.description;
+
+      const current = toggleValue(descriptor.currentValue);
+
+      if (current !== undefined) toggle.currentValue = current;
+
+      descriptors.push(toggle);
+      continue;
+    }
+
+    if (descriptor.type !== "select") continue;
+
+    const select: PanelModelSelectOption = {
+      type: "select",
+      id: descriptor.id,
+      label: descriptor.label,
+      options: trimOptionChoices(descriptor.options),
+    };
+
+    if (descriptor.description !== undefined) select.description = descriptor.description;
+
+    const current = textValue(descriptor.currentValue);
+
+    if (current !== undefined && current !== "") select.currentValue = current;
+
+    const injected = (descriptor.promptInjectedValues ?? []).filter(Boolean);
+
+    if (injected.length > 0) select.promptInjectedValues = injected;
+
+    if (descriptor.role === "reasoning") select.role = "reasoning";
+
+    descriptors.push(select);
+  }
+
+  return descriptors;
+}
+
+/** A wire value as text, when it is text: a select's value, which a boolean is not. */
+function textValue(value: string | boolean | undefined): string | undefined {
+  return value === undefined || value === true || value === false ? undefined : value;
+}
+
+/** A wire value as a toggle's, when it is one: a boolean, which a string is not. */
+function toggleValue(value: string | boolean | undefined): boolean | undefined {
+  return value === true || value === false ? value : undefined;
+}
+
+function trimOptionChoices(raw: WireOptionChoice[] | undefined): PanelModelOptionChoice[] {
+  return (raw ?? []).flatMap((choice) => {
+    if (choice.id === undefined || choice.id === "" || choice.label === undefined) return [];
+
+    const trimmed: PanelModelOptionChoice = { id: choice.id, label: choice.label };
+
+    if (choice.description !== undefined) trimmed.description = choice.description;
+
+    if (choice.isDefault === true) trimmed.isDefault = true;
+
+    return [trimmed];
+  });
+}
+
+/**
+ * The providers a thread can switch to, their models, and the commands and skills their composer offers.
+ * T3's picker offers a provider only while it is on and ready, and hides the models the user hid
+ * (apps/web/src/providerInstances.ts, apps/web/src/modelSelection.ts); custom models stay selectable, as
+ * they do there. A checkout's own scan adds its skills, so `cwd` picks the snapshot T3's composer reads.
+ */
+export function trimModels(config: WireServerConfig | undefined, cwd: string | null = null): PanelModelProvider[] {
   const preferences = config?.settings?.providerModelPreferences ?? {};
 
   return (config?.providers ?? []).flatMap((provider) => {
@@ -1187,7 +1638,11 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
 
       if (model.isCustom !== true && hidden.has(model.slug)) return [];
 
-      const trimmed: PanelModel = { slug: model.slug, name: model.name };
+      const trimmed: PanelModel = {
+        slug: model.slug,
+        name: model.name,
+        options: trimModelOptionDescriptors(model.capabilities?.optionDescriptors),
+      };
 
       if (model.shortName !== undefined) trimmed.shortName = model.shortName;
 
@@ -1205,8 +1660,96 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
     // A provider with nothing left to pick is no group in the list.
     if (models.length === 0) return [];
 
-    return [{ instanceId, displayName: provider.displayName ?? provider.driver ?? instanceId, models }];
+    // T3's composer resolves a provider's commands and skills for the thread's checkout, and falls back
+    // to the machine-wide lists (packages/client-runtime/src/providerSkills.ts, resolveProviderSkillsForCwd).
+    const snapshot = (provider.workspaceSnapshots ?? []).find((candidate) => cwd !== null && candidate.cwd !== undefined && sameProjectRoot(candidate.cwd, cwd));
+    const skills = trimProviderSkills(snapshot?.skills ?? provider.skills);
+
+    return [
+      {
+        instanceId,
+        displayName: provider.displayName ?? provider.driver ?? instanceId,
+        // T3's own graph: a provider that names no toggle still shows it, and one that names no modes takes all.
+        showInteractionModeToggle: provider.showInteractionModeToggle !== false,
+        supportedRuntimeModes: (provider.supportedRuntimeModes ?? []).filter(Boolean),
+        models,
+        commands: trimProviderCommands(snapshot?.slashCommands ?? provider.slashCommands, skills),
+        skills,
+      },
+    ];
   });
+}
+
+/**
+ * The skills T3's slash menu lists: the user-invocable ones, one per name
+ * (packages/client-runtime/src/providerSkills.ts, getProviderSkillsForSlashMenu).
+ */
+function trimProviderSkills(raw: WireSkill[] | undefined): PanelProviderSkill[] {
+  const seen = new Set<string>();
+  const skills: PanelProviderSkill[] = [];
+
+  for (const skill of raw ?? []) {
+    const name = skill.name?.trim() ?? "";
+
+    if (name === "" || skill.enabled === false || skill.userInvocable === false) continue;
+
+    const key = name.toLowerCase();
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const trimmed: PanelProviderSkill = { name };
+
+    if (skill.displayName !== undefined && skill.displayName.trim() !== "") trimmed.displayName = skill.displayName;
+
+    if (skill.description !== undefined) trimmed.description = skill.description;
+
+    if (skill.shortDescription !== undefined) trimmed.shortDescription = skill.shortDescription;
+
+    if (skill.scope !== undefined && skill.scope.trim() !== "") trimmed.scope = skill.scope;
+
+    skills.push(trimmed);
+  }
+
+  return skills;
+}
+
+/** A provider's commands, one per name, without the ones a listed skill of that name stands in for. */
+function trimProviderCommands(raw: WireSlashCommand[] | undefined, skills: PanelProviderSkill[]): PanelProviderCommand[] {
+  const skillNames = new Set(skills.map((skill) => skill.name.toLowerCase()));
+  const seen = new Set<string>();
+
+  return (raw ?? []).flatMap((command) => {
+    const name = command.name?.trim() ?? "";
+    const key = name.toLowerCase();
+
+    if (name === "" || skillNames.has(key) || seen.has(key)) return [];
+    seen.add(key);
+
+    const trimmed: PanelProviderCommand = { name };
+
+    if (command.description !== undefined) trimmed.description = command.description;
+
+    if (command.input?.hint !== undefined) trimmed.hint = command.input.hint;
+
+    return [trimmed];
+  });
+}
+
+/** T3's scratch root and a project's checkout name one folder; only the spelling can differ. */
+function sameProjectRoot(left: string, right: string): boolean {
+  const trim = (path: string) => path.replace(/[\\/]+$/, "");
+
+  return process.platform === "win32" ? trim(left).toLowerCase() === trim(right).toLowerCase() : trim(left) === trim(right);
+}
+
+/** The administrator's cap on permission modes, or null on an unmanaged server. */
+export function trimPolicy(config: WireServerConfig | undefined): PanelManagedPolicy | null {
+  const policy = config?.managedPolicy;
+
+  if (policy === undefined || policy === null || policy.organization === undefined) return null;
+
+  return { organization: policy.organization, maxRuntimeMode: policy.limits?.maxRuntimeMode ?? null };
 }
 
 /**

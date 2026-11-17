@@ -1,8 +1,10 @@
 import type {
   PanelAttachmentReply,
+  PanelAttachmentUrlReply,
   PanelCommand,
   PanelCreateReply,
   PanelDraftReply,
+  PanelEntriesReply,
   PanelForceStopReply,
   PanelItemReply,
   PanelMessage,
@@ -29,7 +31,9 @@ export interface OverlayApi {
     | PanelReply
     | PanelItemReply
     | PanelAttachmentReply
+    | PanelAttachmentUrlReply
     | PanelModelsReply
+    | PanelEntriesReply
     | PanelVoiceReply
     | PanelDraftReply
     | PanelCreateReply

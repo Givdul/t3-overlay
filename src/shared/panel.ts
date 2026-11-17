@@ -3,11 +3,55 @@
 
 import type { ProjectIcon } from "./types";
 
+/** One option value as T3 stores it (packages/contracts/src/model.ts, ProviderOptionSelection). */
+export interface PanelModelOption {
+  id: string;
+  value: string | boolean;
+}
+
 /** The model a thread runs (packages/contracts/src/modelSelection.ts, ModelSelection). */
 export interface PanelModelSelection {
   instanceId: string;
   model: string;
+  /** The model's option values, e.g. its reasoning effort and fast mode; absent when it declares none. */
+  options?: PanelModelOption[];
 }
+
+/** One choice of a model option (packages/contracts/src/model.ts, ProviderOptionChoice). */
+export interface PanelModelOptionChoice {
+  id: string;
+  label: string;
+  description?: string;
+  /** T3 marks the choice a model starts on. */
+  isDefault?: boolean;
+}
+
+/** A model option with a list of values (packages/contracts/src/model.ts, SelectProviderOptionDescriptor). */
+export interface PanelModelSelectOption {
+  type: "select";
+  id: string;
+  label: string;
+  description?: string;
+  options: PanelModelOptionChoice[];
+  /** The value the thread's selection names; main resolves it against the catalog. */
+  currentValue?: string;
+  /** Values a typed prompt also sets, which the traits menu does not offer (Claude's Ultrathink). */
+  promptInjectedValues?: string[];
+  /** Set on an agent's own reasoning control, whose id T3 does not know (an ACP thought level). */
+  role?: "reasoning";
+}
+
+/** A model option that is on or off (packages/contracts/src/model.ts, BooleanProviderOptionDescriptor). */
+export interface PanelModelToggleOption {
+  type: "boolean";
+  id: string;
+  label: string;
+  description?: string;
+  currentValue?: boolean;
+}
+
+/** One option a model declares, e.g. reasoning effort or fast mode (ProviderOptionDescriptor). */
+export type PanelModelOptionDescriptor = PanelModelSelectOption | PanelModelToggleOption;
 
 /** One model a provider offers (packages/contracts/src/server.ts, ServerProviderModel). */
 export interface PanelModel {
@@ -21,13 +65,56 @@ export interface PanelModel {
   isLegacy?: boolean;
   /** T3's own default for the provider, which a new thread starts on when nothing else is set. */
   isDefault?: boolean;
+  /** The options the model declares, in the order its agent listed them (ModelCapabilities.optionDescriptors). */
+  options: PanelModelOptionDescriptor[];
+}
+
+/**
+ * One command a provider expands itself, e.g. Claude's `/compact`
+ * (packages/contracts/src/server.ts, ServerProviderSlashCommand).
+ */
+export interface PanelProviderCommand {
+  name: string;
+  description?: string;
+  /** The command's argument hint, shown when it has no description (server.ts, input.hint). */
+  hint?: string;
+}
+
+/** One skill a provider offers, which its composer invokes as `$name` (server.ts, ServerProviderSkill). */
+export interface PanelProviderSkill {
+  name: string;
+  /** T3's label for it, e.g. its title case; the name when the provider sends none. */
+  displayName?: string;
+  description?: string;
+  /** T3's one-line form, which its menus show before the long description. */
+  shortDescription?: string;
+  /** Where the skill came from: "user", "repo", "project" and so on. */
+  scope?: string;
 }
 
 /** A provider whose models a thread can switch to (packages/contracts/src/server.ts, ServerProvider). */
 export interface PanelModelProvider {
   instanceId: string;
   displayName: string;
+  /** T3 draws a plan toggle for this provider's threads (server.ts, showInteractionModeToggle). */
+  showInteractionModeToggle: boolean;
+  /** The permission modes this provider supports; empty means every one of T3's. */
+  supportedRuntimeModes: string[];
   models: PanelModel[];
+  /** The provider's own commands, without the ones a skill of the same name stands in for. */
+  commands: PanelProviderCommand[];
+  /** The skills its composer offers, as `/skill:name` (server.ts, getProviderSkillsForSlashMenu). */
+  skills: PanelProviderSkill[];
+}
+
+/**
+ * One file or folder the `@` menu offers (packages/contracts/src/project.ts, ProjectEntry). Paths are
+ * relative to the project root, as T3's own composer inserts them.
+ */
+export interface PanelProjectEntry {
+  path: string;
+  /** "file" or "directory". */
+  kind: string;
 }
 
 export interface PanelThread {
@@ -36,6 +123,13 @@ export interface PanelThread {
   title: string;
   /** Null when the nightly's projection carries no model selection. */
   modelSelection: PanelModelSelection | null;
+  /**
+   * The thread's permission mode — "full-access", "approval-required" (T3's "Supervised") and so on
+   * (packages/contracts/src/providerPolicy.ts, RuntimeMode). Null hides the control.
+   */
+  runtimeMode: string | null;
+  /** "default" or "plan" (providerPolicy.ts, ProviderInteractionMode). Null hides the plan toggle. */
+  interactionMode: string | null;
 }
 
 /** A project the new-thread draft can start in (packages/contracts/src/orchestrationProject.ts, OrchestrationProjectShell). */
@@ -46,8 +140,13 @@ export interface PanelProject {
   icon: ProjectIcon;
   /** T3's scratch workspace, which the picker offers as "No project". */
   scratch: boolean;
-  /** The project's own default model; T3's server default applies when it names none. */
+  /**
+   * The model a new thread in this project starts on, with its options: the project's own setting, else
+   * T3's server default (apps/web/src/hooks/useHandleNewThread.ts → resolveProjectSettings).
+   */
   defaultModelSelection: PanelModelSelection | null;
+  /** The permission mode a thread in this project starts in: the project's, else T3's own default. */
+  defaultRuntimeMode: string;
 }
 
 /** What the new-thread draft reads before a thread exists; a thread's projection carries the same capabilities. */
@@ -55,8 +154,10 @@ export interface PanelDraft {
   projects: PanelProject[];
   /** The project the draft starts in: the newest thread's, else the first project. */
   defaultProjectId: string | null;
-  /** The model T3 starts a new thread on (packages/contracts/src/settings.ts, defaultModelSelection). */
+  /** The model T3 starts a new thread on when the project names none (settings.ts, defaultModelSelection). */
   defaultModelSelection: PanelModelSelection | null;
+  /** The permission mode T3's own setting starts a thread in (settings.ts, defaultRuntimeMode). */
+  defaultRuntimeMode: string;
   attachmentUploads: PanelAttachmentUploads | null;
   voiceTranscription: boolean;
 }
@@ -103,6 +204,17 @@ export interface PanelCommandOutput {
 export interface PanelRun {
   id: string;
   status: string;
+}
+
+/** One plan a thread has proposed (packages/contracts/src/orchestrationV2.ts, OrchestrationV2PlanArtifact). */
+export interface PanelPlan {
+  id: string;
+  /** "proposed_plan" or "todo_list". */
+  kind: string;
+  /** "draft", "active", "completed" or "superseded". */
+  status: string;
+  /** A proposed plan's own markdown, which its Implement follow-up sends back (proposed_plan.markdown). */
+  markdown?: string;
 }
 
 export interface PanelAttempt {
@@ -169,6 +281,8 @@ export interface PanelItem {
   text?: string;
   streaming?: boolean;
   markdown?: string;
+  /** The plan a plan row draws (packages/contracts/src/orchestrationV2.ts, proposed_plan.planId). */
+  planId?: string;
   steps?: PanelTodoStep[];
   input?: string;
   output?: string;
@@ -260,6 +374,8 @@ export interface PanelView {
   items: PanelItemRef[];
   /** Messages queued behind the active run, in T3's queue order. */
   queued: PanelQueuedMessage[];
+  /** The thread's plans; the latest active one offers T3's Implement follow-up. */
+  plans: PanelPlan[];
   /**
    * T3's force-stop capability (packages/contracts/src/environment.ts, `threadForceStop`); false hides
    * Force stop, as T3's own clients hide it.
@@ -277,6 +393,26 @@ export interface PanelView {
    * False keeps the old behavior: an expanded row asks `getTurnItem` for its whole output.
    */
   commandOutputStreaming: boolean;
+  /**
+   * Whether the composer offers the selected model's options (reasoning effort, fast mode, …). Another
+   * machine's thread cannot take a new model selection from here, so its traits menu is hidden.
+   */
+  modelTraits: boolean;
+  /**
+   * Whether the composer draws T3's `/` command and `@` file menus from this PC's server. Another machine's
+   * thread is read through `/mcp`, which offers neither, so its composer hides both.
+   */
+  composerMenus: boolean;
+  /**
+   * Whether an active plan offers T3's Implement follow-up. Another machine's plan is read through `/mcp`,
+   * which cannot carry the plan reference back, so its cards hide the action.
+   */
+  planImplementation: boolean;
+  /**
+   * Whether image attachments draw as thumbnails from T3's signed asset URLs. Another machine's thread
+   * keeps its chips: its assets are not minted here.
+   */
+  imagePreviews: boolean;
 }
 
 /** The fields of a domain event the panel folds in; everything else stays in main. */
@@ -290,6 +426,10 @@ export interface PanelEventPayload {
   responseCapability?: { type?: string };
   title?: string;
   modelSelection?: PanelModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
+  /** A `plan.updated` event's plan, so a plan card follows its status (completed once implemented). */
+  plan?: PanelPlan;
 }
 
 export interface PanelEvent {
@@ -314,7 +454,17 @@ export type PanelDraftCommand =
    * (packages/contracts/src/orchestrationV2.ts, launchThread; packages/client-runtime/src/operations/
    * commands.ts, startThreadTurn), in the project root.
    */
-  | { type: "create"; projectId: string; modelSelection: PanelModelSelection; text: string; attachments: PanelAttachment[] };
+  | {
+      type: "create";
+      projectId: string;
+      modelSelection: PanelModelSelection;
+      /** The permission mode the new thread starts in, as its composer picked it. */
+      runtimeMode: string;
+      /** "default", or "plan" when the draft's plan toggle is on. */
+      interactionMode: string;
+      text: string;
+      attachments: PanelAttachment[];
+    };
 
 /** The commands the panel's connection answers, with or without an open thread. */
 export type PanelThreadCommand =
@@ -345,10 +495,37 @@ export type PanelThreadCommand =
   | { type: "respond"; requestId: string; decision: PanelApprovalDecision }
   | { type: "answer"; requestId: string; answers: Record<string, string | string[]> }
   | { type: "turnItem"; itemId: string }
-  /** The models the server offers, grouped by provider, for the composer's picker. */
-  | { type: "models" }
-  /** Switches the open thread's model, so its next turn runs on it. */
-  | { type: "setModel"; instanceId: string; model: string }
+  /**
+   * The models, commands and skills the server offers, grouped by provider. `projectId` adds the skills
+   * T3's own scan found in that project's checkout.
+   */
+  | { type: "models"; projectId?: string }
+  /**
+   * Searches the project's files for the composer's `@` menu (packages/contracts/src/project.ts,
+   * ProjectSearchEntriesInput; apps/web/src/state/queries.ts, useComposerPathSearch).
+   */
+  | { type: "entries"; projectId: string; query: string }
+  /**
+   * Switches the open thread's model, so its next turn runs on it. `options` are the model's own
+   * option values, which a traits pick writes; a plain model switch leaves them to the model.
+   */
+  | { type: "setModel"; instanceId: string; model: string; options?: PanelModelOption[] }
+  /** Sets the thread's permission mode for its next turns (`thread.runtime-mode.set`). */
+  | { type: "setRuntimeMode"; runtimeMode: string }
+  /** Puts the thread in plan mode, or back to default (`thread.interaction-mode.set`). */
+  | { type: "setInteractionMode"; interactionMode: string }
+  /**
+   * T3's Implement follow-up on the latest plan: switches the thread out of plan mode and sends the plan
+   * back to its agent (apps/web/src/proposedPlan.ts, PLAN_IMPLEMENTATION_PROMPT_PREFIX).
+   */
+  | { type: "implementPlan"; planId: string }
+  /**
+   * Mints one image attachment's signed asset URL, which T3's own web client puts in an `<img>`
+   * (packages/contracts/src/rpc.ts, assets.createUrl). The bearer token stays in main.
+   */
+  | { type: "attachmentUrl"; attachmentId: string }
+  /** Deletes a pending upload T3 would delete when its composer drops it (`attachments.delete`). */
+  | { type: "releaseAttachment"; attachmentId: string }
   /** Asks T3 whether it can transcribe now, so a missing model is reported before a recording. */
   | { type: "voiceStatus" }
   /**
@@ -374,7 +551,23 @@ export type PanelItemReply = { ok: true; item: PanelItem } | PanelFailure;
 
 export type PanelAttachmentReply = { ok: true; attachment: PanelAttachment } | PanelFailure;
 
-export type PanelModelsReply = { ok: true; providers: PanelModelProvider[] } | PanelFailure;
+/** One attachment's signed asset URL; the renderer draws it without ever holding the bearer token. */
+export type PanelAttachmentUrlReply = { ok: true; url: string } | PanelFailure;
+
+/**
+ * The administrator's policy for this T3, which caps the permission modes a thread may run
+ * (packages/contracts/src/managedPolicy.ts, ManagedPolicySummary). Null on an unmanaged server.
+ */
+export interface PanelManagedPolicy {
+  organization: string;
+  /** The broadest runtime mode the policy allows; null when it caps none. */
+  maxRuntimeMode: string | null;
+}
+
+export type PanelModelsReply = { ok: true; providers: PanelModelProvider[]; policy: PanelManagedPolicy | null } | PanelFailure;
+
+/** The project's matching files and folders, in T3's own order, bounded as its composer bounds them. */
+export type PanelEntriesReply = { ok: true; entries: PanelProjectEntry[] } | PanelFailure;
 
 /** T3's transcript of a recording; `text` is empty when it heard no speech. */
 export type PanelVoiceReply = { ok: true; text: string } | PanelFailure;
