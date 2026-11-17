@@ -16,12 +16,17 @@ Play the game in a borderless or windowed mode. Exclusive fullscreen hides the o
 
 ## What the panel can do
 
-- Read: the thread's title, its markdown and code timeline, running commands as they stream, and its
-  status. Every message, command, file change, plan and notice T3's own timeline shows is drawn here.
+- Read: the thread's title, its markdown and code timeline, running commands as they stream (with
+  their full output once finished), image thumbnails that open larger, and its status. Every message, command, file change, plan and notice T3's own timeline shows is drawn here.
 - Send: Enter starts a turn, or queues behind the active run while one is going. Shift+Enter is a
   newline. A queued message can be edited or removed until its turn starts.
 - Attach: paste an image, drop files, or pick them with the paperclip. T3's own size limits apply.
-- Pick the model: the composer footer shows the thread's model and switches it for the next turn.
+- Pick the model: the composer footer shows the thread's model and switches it for the next turn,
+  with the options T3 offers for it, such as reasoning effort and fast mode.
+- Set the permission mode and turn plan mode on or off, within any ceiling T3's policy sets. When a
+  plan is proposed, **Implement** starts it as T3 does.
+- Type `/` for T3's commands and the provider's commands and skills, and `@` to mention a file from
+  the thread's project.
 - Dictate: the mic records, T3 transcribes it, and the text lands in the composer unsent. It needs a
   speech model set up in T3 under Settings → Voice.
 - Start a thread: the `+` button opens a draft with a project picker (or No project), the model
@@ -83,9 +88,9 @@ revokes its session in T3, which `t3 auth session list` lists as an `mcp-client`
 The panel is a thin client, not T3's page. Some actions are only in T3 Code; the title row's
 **Open in T3** opens the same thread there:
 
-- model options such as effort, and a thread's permission mode,
-- `/` slash commands and `@` file mentions,
-- attachments, model picking, dictation and force stop on another machine's threads.
+- T3's client-only `/` commands such as `/clear` and `/side`,
+- on another machine's threads: attachments, model picking and its options, permission and plan
+  mode, `/` and `@` menus, dictation, image thumbnails and force stop.
 
 ## How it connects
 
