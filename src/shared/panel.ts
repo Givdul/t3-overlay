@@ -3,11 +3,55 @@
 
 import type { ProjectIcon } from "./types";
 
+/** One option value as T3 stores it (packages/contracts/src/model.ts, ProviderOptionSelection). */
+export interface PanelModelOption {
+  id: string;
+  value: string | boolean;
+}
+
 /** The model a thread runs (packages/contracts/src/modelSelection.ts, ModelSelection). */
 export interface PanelModelSelection {
   instanceId: string;
   model: string;
+  /** The model's option values, e.g. its reasoning effort and fast mode; absent when it declares none. */
+  options?: PanelModelOption[];
 }
+
+/** One choice of a model option (packages/contracts/src/model.ts, ProviderOptionChoice). */
+export interface PanelModelOptionChoice {
+  id: string;
+  label: string;
+  description?: string;
+  /** T3 marks the choice a model starts on. */
+  isDefault?: boolean;
+}
+
+/** A model option with a list of values (packages/contracts/src/model.ts, SelectProviderOptionDescriptor). */
+export interface PanelModelSelectOption {
+  type: "select";
+  id: string;
+  label: string;
+  description?: string;
+  options: PanelModelOptionChoice[];
+  /** The value the thread's selection names; main resolves it against the catalog. */
+  currentValue?: string;
+  /** Values a typed prompt also sets, which the traits menu does not offer (Claude's Ultrathink). */
+  promptInjectedValues?: string[];
+  /** Set on an agent's own reasoning control, whose id T3 does not know (an ACP thought level). */
+  role?: "reasoning";
+}
+
+/** A model option that is on or off (packages/contracts/src/model.ts, BooleanProviderOptionDescriptor). */
+export interface PanelModelToggleOption {
+  type: "boolean";
+  id: string;
+  label: string;
+  description?: string;
+  currentValue?: boolean;
+}
+
+/** One option a model declares, e.g. reasoning effort or fast mode (ProviderOptionDescriptor). */
+export type PanelModelOptionDescriptor = PanelModelSelectOption | PanelModelToggleOption;
 
 /** One model a provider offers (packages/contracts/src/server.ts, ServerProviderModel). */
 export interface PanelModel {
@@ -21,12 +65,18 @@ export interface PanelModel {
   isLegacy?: boolean;
   /** T3's own default for the provider, which a new thread starts on when nothing else is set. */
   isDefault?: boolean;
+  /** The options the model declares, in the order its agent listed them (ModelCapabilities.optionDescriptors). */
+  options: PanelModelOptionDescriptor[];
 }
 
 /** A provider whose models a thread can switch to (packages/contracts/src/server.ts, ServerProvider). */
 export interface PanelModelProvider {
   instanceId: string;
   displayName: string;
+  /** T3 draws a plan toggle for this provider's threads (server.ts, showInteractionModeToggle). */
+  showInteractionModeToggle: boolean;
+  /** The permission modes this provider supports; empty means every one of T3's. */
+  supportedRuntimeModes: string[];
   models: PanelModel[];
 }
 
@@ -36,6 +86,13 @@ export interface PanelThread {
   title: string;
   /** Null when the nightly's projection carries no model selection. */
   modelSelection: PanelModelSelection | null;
+  /**
+   * The thread's permission mode — "full-access", "approval-required" (T3's "Supervised") and so on
+   * (packages/contracts/src/providerPolicy.ts, RuntimeMode). Null hides the control.
+   */
+  runtimeMode: string | null;
+  /** "default" or "plan" (providerPolicy.ts, ProviderInteractionMode). Null hides the plan toggle. */
+  interactionMode: string | null;
 }
 
 /** A project the new-thread draft can start in (packages/contracts/src/orchestrationProject.ts, OrchestrationProjectShell). */
@@ -48,6 +105,8 @@ export interface PanelProject {
   scratch: boolean;
   /** The project's own default model; T3's server default applies when it names none. */
   defaultModelSelection: PanelModelSelection | null;
+  /** The permission mode a thread in this project starts in: the project's, else T3's own default. */
+  defaultRuntimeMode: string;
 }
 
 /** What the new-thread draft reads before a thread exists; a thread's projection carries the same capabilities. */
@@ -57,6 +116,8 @@ export interface PanelDraft {
   defaultProjectId: string | null;
   /** The model T3 starts a new thread on (packages/contracts/src/settings.ts, defaultModelSelection). */
   defaultModelSelection: PanelModelSelection | null;
+  /** The permission mode T3's own setting starts a thread in (settings.ts, defaultRuntimeMode). */
+  defaultRuntimeMode: string;
   attachmentUploads: PanelAttachmentUploads | null;
   voiceTranscription: boolean;
 }
@@ -277,6 +338,11 @@ export interface PanelView {
    * False keeps the old behavior: an expanded row asks `getTurnItem` for its whole output.
    */
   commandOutputStreaming: boolean;
+  /**
+   * Whether the composer offers the selected model's options (reasoning effort, fast mode, …). Another
+   * machine's thread cannot take a new model selection from here, so its traits menu is hidden.
+   */
+  modelTraits: boolean;
 }
 
 /** The fields of a domain event the panel folds in; everything else stays in main. */
@@ -290,6 +356,8 @@ export interface PanelEventPayload {
   responseCapability?: { type?: string };
   title?: string;
   modelSelection?: PanelModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
 }
 
 export interface PanelEvent {
@@ -314,7 +382,17 @@ export type PanelDraftCommand =
    * (packages/contracts/src/orchestrationV2.ts, launchThread; packages/client-runtime/src/operations/
    * commands.ts, startThreadTurn), in the project root.
    */
-  | { type: "create"; projectId: string; modelSelection: PanelModelSelection; text: string; attachments: PanelAttachment[] };
+  | {
+      type: "create";
+      projectId: string;
+      modelSelection: PanelModelSelection;
+      /** The permission mode the new thread starts in, as its composer picked it. */
+      runtimeMode: string;
+      /** "default", or "plan" when the draft's plan toggle is on. */
+      interactionMode: string;
+      text: string;
+      attachments: PanelAttachment[];
+    };
 
 /** The commands the panel's connection answers, with or without an open thread. */
 export type PanelThreadCommand =
@@ -347,8 +425,15 @@ export type PanelThreadCommand =
   | { type: "turnItem"; itemId: string }
   /** The models the server offers, grouped by provider, for the composer's picker. */
   | { type: "models" }
-  /** Switches the open thread's model, so its next turn runs on it. */
-  | { type: "setModel"; instanceId: string; model: string }
+  /**
+   * Switches the open thread's model, so its next turn runs on it. `options` are the model's own
+   * option values, which a traits pick writes; a plain model switch leaves them to the model.
+   */
+  | { type: "setModel"; instanceId: string; model: string; options?: PanelModelOption[] }
+  /** Sets the thread's permission mode for its next turns (`thread.runtime-mode.set`). */
+  | { type: "setRuntimeMode"; runtimeMode: string }
+  /** Puts the thread in plan mode, or back to default (`thread.interaction-mode.set`). */
+  | { type: "setInteractionMode"; interactionMode: string }
   /** Asks T3 whether it can transcribe now, so a missing model is reported before a recording. */
   | { type: "voiceStatus" }
   /**
@@ -374,7 +459,17 @@ export type PanelItemReply = { ok: true; item: PanelItem } | PanelFailure;
 
 export type PanelAttachmentReply = { ok: true; attachment: PanelAttachment } | PanelFailure;
 
-export type PanelModelsReply = { ok: true; providers: PanelModelProvider[] } | PanelFailure;
+/**
+ * The administrator's policy for this T3, which caps the permission modes a thread may run
+ * (packages/contracts/src/managedPolicy.ts, ManagedPolicySummary). Null on an unmanaged server.
+ */
+export interface PanelManagedPolicy {
+  organization: string;
+  /** The broadest runtime mode the policy allows; null when it caps none. */
+  maxRuntimeMode: string | null;
+}
+
+export type PanelModelsReply = { ok: true; providers: PanelModelProvider[]; policy: PanelManagedPolicy | null } | PanelFailure;
 
 /** T3's transcript of a recording; `text` is empty when it heard no speech. */
 export type PanelVoiceReply = { ok: true; text: string } | PanelFailure;

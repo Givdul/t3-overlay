@@ -1,7 +1,8 @@
 import { Check, ChevronUp, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import type { PanelModel, PanelModelProvider, PanelModelSelection } from "../../../shared/panel";
-import { useModelCatalog } from "./useModelCatalog";
+import { findModel } from "./modelTraits";
+import type { ModelCatalog } from "./useModelCatalog";
 import { usePopoverDismiss } from "./usePopoverDismiss";
 
 // The composer's model control: the open thread's provider and model, and the list T3 offers. Picking
@@ -9,18 +10,17 @@ import { usePopoverDismiss } from "./usePopoverDismiss";
 // updateThreadMetadata), so the next turn runs on it and T3 shows the same model on the thread.
 
 interface ModelPickerProps {
-  /** The open thread, so the list restarts with it. */
-  threadKey: string;
+  /** The catalog the composer read once for this thread. */
+  catalog: ModelCatalog;
   /** The thread's model, from its projection. */
   current: PanelModelSelection;
   /** The draft composer picks the model its new thread starts on; an open thread switches through main. */
   onPick?: (selection: PanelModelSelection) => void;
 }
 
-export function ModelPicker({ threadKey, current, onPick }: ModelPickerProps) {
+export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
-  const catalog = useModelCatalog(threadKey);
   const anchor = usePopoverDismiss(open, () => setOpen(false));
   const groups = withCurrent(catalog.providers, current);
   const named = findModel(catalog.providers, current);
@@ -153,22 +153,6 @@ function label(model: PanelModel, providerName: string): string {
   return short.toLowerCase().startsWith(prefix.toLowerCase()) && short.length > prefix.length ? short.slice(prefix.length) : short;
 }
 
-function findModel(
-  providers: PanelModelProvider[] | null,
-  current: PanelModelSelection,
-): { provider: PanelModelProvider; model: PanelModel } | null {
-  if (providers === null) return null;
-
-  for (const provider of providers) {
-    if (provider.instanceId !== current.instanceId) continue;
-    const model = provider.models.find((candidate) => candidate.slug === current.model);
-
-    if (model !== undefined) return { provider, model };
-  }
-
-  return null;
-}
-
 /** Older models sit after the current ones, as they do behind T3's "Show more". */
 function withCurrent(providers: PanelModelProvider[] | null, current: PanelModelSelection): PanelModelProvider[] {
   if (providers === null) return [];
@@ -179,7 +163,7 @@ function withCurrent(providers: PanelModelProvider[] | null, current: PanelModel
     // A selection the catalog no longer lists (a hidden or retired model) stays visible, so the list
     // marks it instead of showing no current row at all.
     if (current.instanceId === provider.instanceId && !models.some((model) => model.slug === current.model)) {
-      models.unshift({ slug: current.model, name: current.model });
+      models.unshift({ slug: current.model, name: current.model, options: [] });
     }
 
     return { ...provider, models };

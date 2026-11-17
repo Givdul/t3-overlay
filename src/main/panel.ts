@@ -13,12 +13,18 @@ import type {
   PanelItem,
   PanelItemRef,
   PanelItemReply,
+  PanelManagedPolicy,
   PanelMessage,
   PanelMessageContext,
   PanelModel,
+  PanelModelOption,
+  PanelModelOptionChoice,
+  PanelModelOptionDescriptor,
   PanelModelProvider,
+  PanelModelSelectOption,
   PanelModelSelection,
   PanelModelsReply,
+  PanelModelToggleOption,
   PanelQuestion,
   PanelQueuedMessage,
   PanelReply,
@@ -153,11 +159,39 @@ interface WireMessage {
   context?: PanelMessageContext;
 }
 
+/** One option value as T3 stores it (packages/contracts/src/model.ts, ProviderOptionSelection). */
+interface WireOptionSelection {
+  id?: string;
+  value?: string | boolean;
+}
+
+/** One choice of a model option (packages/contracts/src/model.ts, ProviderOptionChoice). */
+interface WireOptionChoice {
+  id?: string;
+  label?: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
+/** One option a model declares (packages/contracts/src/model.ts, ProviderOptionDescriptor). */
+interface WireOptionDescriptor {
+  id?: string;
+  label?: string;
+  description?: string;
+  type?: string;
+  options?: WireOptionChoice[];
+  currentValue?: string | boolean;
+  promptInjectedValues?: string[];
+  role?: string;
+}
+
 /** A thread's model (packages/contracts/src/modelSelection.ts); `provider` is the older spelling of `instanceId`. */
 interface WireModelSelection {
   instanceId?: string;
   provider?: string;
   model?: string;
+  /** T3 sends an array; an older server sent one object keyed by option id. */
+  options?: WireOptionSelection[] | Record<string, string | boolean>;
 }
 
 interface WireThread {
@@ -165,6 +199,8 @@ interface WireThread {
   projectId?: string;
   title?: string;
   modelSelection?: WireModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
 }
 
 interface WireRun {
@@ -216,6 +252,8 @@ interface WireEventPayload extends WireItem {
   rootNodeId?: string;
   responseCapability?: { type?: string };
   modelSelection?: WireModelSelection;
+  runtimeMode?: string;
+  interactionMode?: string;
 }
 
 interface WireTurnItemReply {
@@ -248,6 +286,8 @@ interface WireProviderModel {
   isCustom?: boolean;
   isLegacy?: boolean;
   isDefault?: boolean;
+  /** The options the model declares, e.g. its reasoning effort (packages/contracts/src/model.ts, ModelCapabilities). */
+  capabilities?: { optionDescriptors?: WireOptionDescriptor[] } | null;
 }
 
 /** A provider and its models (packages/contracts/src/server.ts, ServerProvider). */
@@ -260,7 +300,17 @@ interface WireProvider {
   status?: string;
   /** "unavailable" when this machine cannot run the provider at all. */
   availability?: string;
+  /** T3 draws a plan toggle for this provider's threads. */
+  showInteractionModeToggle?: boolean;
+  /** The permission modes the provider supports; absent means every one. */
+  supportedRuntimeModes?: string[];
   models?: WireProviderModel[];
+}
+
+/** The administrator's policy, which caps the permission modes a thread may run (packages/contracts/src/managedPolicy.ts, ManagedPolicySummary). */
+interface WireManagedPolicy {
+  organization?: string;
+  limits?: { maxRuntimeMode?: string };
 }
 
 /** The slice of `server.getConfig` the composer's model picker and the new-thread draft read (packages/contracts/src/server.ts). */
@@ -271,7 +321,11 @@ export interface WireServerConfig {
     providerModelPreferences?: Record<string, { hiddenModels?: string[] }>;
     defaultModelSelection?: WireModelSelection | null;
     defaultRuntimeMode?: string;
+    /** A project's own settings override the server's, as its web draft's runtime mode reads them. */
+    projectSettingsOverrides?: Record<string, { defaultRuntimeMode?: string }>;
   };
+  /** Present when an administrator's policy manages this environment. */
+  managedPolicy?: WireManagedPolicy | null;
   scratchWorkspaceRoot?: string;
 }
 
@@ -579,6 +633,16 @@ export function startPanel(options: PanelOptions): Panel {
     }
   }
 
+  /**
+   * `server.getConfig` read once: the providers a thread can switch to, the options each model declares,
+   * and the policy that caps its threads' permission modes.
+   */
+  async function readCatalog(): Promise<PanelModelsReply> {
+    const config = await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}));
+
+    return { ok: true, providers: trimModels(config), policy: trimPolicy(config) };
+  }
+
   async function command(
     next: PanelThreadCommand,
   ): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply> {
@@ -594,10 +658,7 @@ export function startPanel(options: PanelOptions): Panel {
 
           return await transcribePcm(options.server, options.token, next.pcm);
         case "models":
-          return {
-            ok: true,
-            providers: trimModels(await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}))),
-          };
+          return await readCatalog();
         case "attach": {
           const capability = options.server.attachmentUploads;
 
@@ -726,13 +787,36 @@ export function startPanel(options: PanelOptions): Panel {
           return { ok: true };
         }
 
-        case "setModel":
-          await dispatch({
-            type: "thread.model-selection.set",
-            threadId: thread.threadId,
-            modelSelection: { instanceId: next.instanceId, model: next.model },
-          });
+        case "setModel": {
+          const modelSelection: Extract<ThreadCommand, { type: "thread.model-selection.set" }>["modelSelection"] = {
+            instanceId: next.instanceId,
+            model: next.model,
+          };
+
+          // A traits pick writes the model's own options; a plain model switch leaves them to the model.
+          if (next.options !== undefined) modelSelection.options = next.options;
+
+          await dispatch({ type: "thread.model-selection.set", threadId: thread.threadId, modelSelection });
           // The next turn reads the thread's selection: re-read it so the composer shows the new model.
+          await pushSnapshot();
+
+          return { ok: true };
+        }
+
+        case "setRuntimeMode":
+          // T3's own command (packages/client-runtime/src/operations/commands.ts, setThreadRuntimeMode).
+          await dispatch({ type: "thread.runtime-mode.set", threadId: thread.threadId, runtimeMode: next.runtimeMode });
+
+          await pushSnapshot();
+
+          return { ok: true };
+        case "setInteractionMode":
+          await dispatch({
+            type: "thread.interaction-mode.set",
+            threadId: thread.threadId,
+            interactionMode: next.interactionMode,
+          });
+
           await pushSnapshot();
 
           return { ok: true };
@@ -1109,7 +1193,14 @@ export function trimView(
   });
 
   return {
-    thread: { id: thread.id, projectId: thread.projectId, title: thread.title ?? "", modelSelection: trimModelSelection(thread.modelSelection) },
+    thread: {
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title ?? "",
+      modelSelection: trimModelSelection(thread.modelSelection),
+      runtimeMode: thread.runtimeMode ?? null,
+      interactionMode: thread.interactionMode ?? null,
+    },
     runs,
     attempts,
     runtimeRequests,
@@ -1120,6 +1211,8 @@ export function trimView(
     voiceTranscription,
     threadForceStop,
     commandOutputStreaming,
+    // This thread is on this PC's server, whose socket takes a model selection from the panel.
+    modelTraits: true,
   };
 }
 
@@ -1153,16 +1246,125 @@ function trimEventPayload(type: string, payload: WireEventPayload | undefined): 
 
   if (modelSelection !== null) trimmed.modelSelection = modelSelection;
 
+  // T3's own composer switching a thread's permission or plan mode lands here too.
+  if (payload.runtimeMode !== undefined) trimmed.runtimeMode = payload.runtimeMode;
+
+  if (payload.interactionMode !== undefined) trimmed.interactionMode = payload.interactionMode;
+
   return trimmed;
 }
 
-/** A thread's model, or null when the nightly names none: the composer then hides its picker. */
+/**
+ * A thread's model, or null when the nightly names none: the composer then hides its picker.
+ * `options` hold the model's own values, e.g. its reasoning effort (packages/contracts/src/model.ts,
+ * ProviderOptionSelection); an older server sent one object keyed by option id instead of an array.
+ */
 export function trimModelSelection(raw: WireModelSelection | null | undefined): PanelModelSelection | null {
   const instanceId = raw?.instanceId ?? raw?.provider;
 
   if (instanceId === undefined || raw?.model === undefined) return null;
 
-  return { instanceId, model: raw.model };
+  const selection: PanelModelSelection = { instanceId, model: raw.model };
+  const options = trimModelOptions(raw.options);
+
+  if (options !== undefined && options.length > 0) selection.options = options;
+
+  return selection;
+}
+
+/** The option values a model selection carries; the legacy object spelling is read as the array it became. */
+function trimModelOptions(raw: WireModelSelection["options"]): PanelModelOption[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+
+  const entries: WireOptionSelection[] = Array.isArray(raw)
+    ? raw
+    : Object.entries(raw).map(([id, value]) => ({ id, value }));
+
+  // An option without an id, or without a value this build can send, is not one it may write back.
+  const options = entries.flatMap((entry) =>
+    entry.id === undefined || entry.id === "" || entry.value === undefined ? [] : [{ id: entry.id, value: entry.value }],
+  );
+
+  return options.length > 0 ? options : undefined;
+}
+
+/**
+ * The options a model declares, with the thread's own values on them: the menu draws each list and toggle
+ * with the value its model would run (apps/web/src/components/chat/TraitsPicker.tsx, getSelectedTraits;
+ * packages/shared/src/model.ts, getProviderOptionDescriptors).
+ */
+function trimModelOptionDescriptors(raw: WireOptionDescriptor[] | undefined): PanelModelOptionDescriptor[] {
+  const descriptors: PanelModelOptionDescriptor[] = [];
+
+  for (const descriptor of raw ?? []) {
+    if (descriptor.id === undefined || descriptor.id === "" || descriptor.label === undefined) continue;
+
+    if (descriptor.type === "boolean") {
+      const toggle: PanelModelToggleOption = {
+        type: "boolean",
+        id: descriptor.id,
+        label: descriptor.label,
+      };
+
+      if (descriptor.description !== undefined) toggle.description = descriptor.description;
+
+      const current = toggleValue(descriptor.currentValue);
+
+      if (current !== undefined) toggle.currentValue = current;
+
+      descriptors.push(toggle);
+      continue;
+    }
+
+    if (descriptor.type !== "select") continue;
+
+    const select: PanelModelSelectOption = {
+      type: "select",
+      id: descriptor.id,
+      label: descriptor.label,
+      options: trimOptionChoices(descriptor.options),
+    };
+
+    if (descriptor.description !== undefined) select.description = descriptor.description;
+
+    const current = textValue(descriptor.currentValue);
+
+    if (current !== undefined && current !== "") select.currentValue = current;
+
+    const injected = (descriptor.promptInjectedValues ?? []).filter(Boolean);
+
+    if (injected.length > 0) select.promptInjectedValues = injected;
+
+    if (descriptor.role === "reasoning") select.role = "reasoning";
+
+    descriptors.push(select);
+  }
+
+  return descriptors;
+}
+
+/** A wire value as text, when it is text: a select's value, which a boolean is not. */
+function textValue(value: string | boolean | undefined): string | undefined {
+  return value === undefined || value === true || value === false ? undefined : value;
+}
+
+/** A wire value as a toggle's, when it is one: a boolean, which a string is not. */
+function toggleValue(value: string | boolean | undefined): boolean | undefined {
+  return value === true || value === false ? value : undefined;
+}
+
+function trimOptionChoices(raw: WireOptionChoice[] | undefined): PanelModelOptionChoice[] {
+  return (raw ?? []).flatMap((choice) => {
+    if (choice.id === undefined || choice.id === "" || choice.label === undefined) return [];
+
+    const trimmed: PanelModelOptionChoice = { id: choice.id, label: choice.label };
+
+    if (choice.description !== undefined) trimmed.description = choice.description;
+
+    if (choice.isDefault === true) trimmed.isDefault = true;
+
+    return [trimmed];
+  });
 }
 
 /**
@@ -1187,7 +1389,11 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
 
       if (model.isCustom !== true && hidden.has(model.slug)) return [];
 
-      const trimmed: PanelModel = { slug: model.slug, name: model.name };
+      const trimmed: PanelModel = {
+        slug: model.slug,
+        name: model.name,
+        options: trimModelOptionDescriptors(model.capabilities?.optionDescriptors),
+      };
 
       if (model.shortName !== undefined) trimmed.shortName = model.shortName;
 
@@ -1205,8 +1411,26 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
     // A provider with nothing left to pick is no group in the list.
     if (models.length === 0) return [];
 
-    return [{ instanceId, displayName: provider.displayName ?? provider.driver ?? instanceId, models }];
+    return [
+      {
+        instanceId,
+        displayName: provider.displayName ?? provider.driver ?? instanceId,
+        // T3's own graph: a provider that names no toggle shows none, and one that names no modes takes all.
+        showInteractionModeToggle: provider.showInteractionModeToggle !== false,
+        supportedRuntimeModes: (provider.supportedRuntimeModes ?? []).filter(Boolean),
+        models,
+      },
+    ];
   });
+}
+
+/** The administrator's cap on permission modes, or null on an unmanaged server. */
+export function trimPolicy(config: WireServerConfig | undefined): PanelManagedPolicy | null {
+  const policy = config?.managedPolicy;
+
+  if (policy === undefined || policy === null || policy.organization === undefined) return null;
+
+  return { organization: policy.organization, maxRuntimeMode: policy.limits?.maxRuntimeMode ?? null };
 }
 
 /**

@@ -1,4 +1,4 @@
-import { ArrowUp, ExternalLink, FileText, LoaderCircle, Mic, Paperclip, PenLine, Square, X } from "lucide-react";
+import { ArrowUp, ExternalLink, FileText, ListChecks, LoaderCircle, Mic, Paperclip, PenLine, Square, X } from "lucide-react";
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type RefObject } from "react";
 import { formatAttachmentSize } from "../../../shared/attachments";
 import type {
@@ -6,18 +6,25 @@ import type {
   PanelAttachmentReply,
   PanelAttachmentUploads,
   PanelCreateReply,
+  PanelModelOption,
   PanelModelSelection,
   PanelReply,
   PanelRun,
 } from "../../../shared/panel";
+import { findModel } from "./modelTraits";
 import { ModelPicker } from "./ModelPicker";
+import { RuntimeModePicker } from "./RuntimeModePicker";
+import { TraitsPicker } from "./TraitsPicker";
 import { useComposerAttachments } from "./useComposerAttachments";
+import { useModelCatalog } from "./useModelCatalog";
 import { usePendingCaret } from "./usePendingCaret";
 import { useVoiceInput, type VoicePhase } from "./useVoiceInput";
 
 // The panel's composer: plain text, attachments, dictation, Enter sends, Stop while a turn runs. Enter
 // queues behind the active run instead of starting one; T3 draws the queued message until it starts.
 // The new-thread draft draws the same card, and its send starts the thread instead of joining one.
+// Its footer holds T3's composer settings: the model, the model's options, plan mode and the thread's
+// permission mode.
 
 export interface ComposerHandle {
   focus(): void;
@@ -42,8 +49,20 @@ interface ComposerProps {
   voiceTranscription: boolean;
   /** The thread's model; null hides the model control. */
   modelSelection: PanelModelSelection | null;
+  /** Whether the model's options are offered; another machine's thread cannot take them. */
+  modelTraits: boolean;
+  /** The thread's permission mode; null hides the mode control. */
+  runtimeMode: string | null;
+  /** "default" or "plan"; null hides the plan toggle. */
+  interactionMode: string | null;
   /** The draft picks the model its new thread starts on; an open thread switches through main. */
   onPickModel?: (selection: PanelModelSelection) => void;
+  /** The draft keeps the model's options for the thread it creates; an open thread writes through main. */
+  onPickModelOptions?: (options: PanelModelOption[]) => void;
+  /** The draft keeps the permission mode for the thread it creates; an open thread writes through main. */
+  onPickRuntimeMode?: (mode: string) => void;
+  /** The draft keeps plan mode for the thread it creates; an open thread writes through main. */
+  onSetPlanMode?: (plan: boolean) => void;
   /** Sends the message into the open thread, or starts the draft's thread with it. */
   onSend(text: string, attachments: PanelAttachment[], queue: boolean): Promise<PanelReply | PanelAttachmentReply | PanelCreateReply>;
   /** The queued message this box is editing; its save replaces send and queue. */
@@ -106,6 +125,29 @@ export function Composer(props: ComposerProps) {
   const attachments = draft.attachments;
   const attachable = props.attachmentUploads !== null;
   const uploading = attachments.some((attachment) => attachment.status !== "ready");
+
+  // The catalog is read once for the whole footer: the model list, the model's options and the provider's
+  // permission modes and plan toggle all come from it.
+  const catalog = useModelCatalog(props.threadKey);
+  const named = props.modelSelection === null ? null : findModel(catalog.providers, props.modelSelection);
+  const planAllowed = props.interactionMode !== null && named?.provider.showInteractionModeToggle !== false;
+  const planOn = props.interactionMode === "plan";
+
+  /** T3's plan toggle (apps/mobile/src/state/thread-outbox-model.ts, resolveProviderInteractionMode). */
+  async function togglePlan() {
+    const next = planOn ? "default" : "plan";
+
+    if (props.onSetPlanMode !== undefined) {
+      props.onSetPlanMode(next === "plan");
+
+      return;
+    }
+
+    setError(null);
+    const reply = await window.overlay.panel({ type: "setInteractionMode", interactionMode: next });
+
+    if (!reply.ok) setError(reply.error);
+  }
 
   const setDraftText = (value: string) => {
     textRef.current = value;
@@ -250,7 +292,18 @@ export function Composer(props: ComposerProps) {
       {props.title !== null && <p className="truncate px-[14px] pt-2 pb-0.5 text-[12px] font-semibold text-t3-fg">{props.title}</p>}
       <div className="flex items-center justify-between gap-2 px-4 pt-2 pb-1 text-[11px] text-t3-muted">
         <span className="flex min-w-0 items-center">{props.context}</span>
-        <span className="shrink-0">{props.statusLabel}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* T3 puts the permission picker on the draft's context strip; the thread's status row has room for it. */}
+          {props.runtimeMode !== null && named !== null && (
+            <RuntimeModePicker
+              current={props.runtimeMode}
+              supported={named.provider.supportedRuntimeModes}
+              policy={catalog.policy}
+              onPick={props.onPickRuntimeMode}
+            />
+          )}
+          {props.statusLabel !== "" && <span>{props.statusLabel}</span>}
+        </span>
       </div>
 
       {attachments.length > 0 && (
@@ -396,7 +449,31 @@ export function Composer(props: ComposerProps) {
           </>
         )}
         {props.modelSelection !== null && (
-          <ModelPicker threadKey={props.threadKey} current={props.modelSelection} onPick={props.onPickModel} />
+          <ModelPicker catalog={catalog} current={props.modelSelection} onPick={props.onPickModel} />
+        )}
+        {props.modelTraits && props.modelSelection !== null && (
+          <TraitsPicker
+            threadKey={props.threadKey}
+            model={named?.model ?? null}
+            current={props.modelSelection}
+            onPick={props.onPickModelOptions}
+          />
+        )}
+        {planAllowed && (
+          <button
+            type="button"
+            title={planOn ? "Plan mode: on" : "Plan mode: off"}
+            aria-label={planOn ? "Turn plan mode off" : "Turn plan mode on"}
+            aria-pressed={planOn}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void togglePlan()}
+            className={`flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] transition-colors ${
+              planOn ? "bg-t3-accent text-t3-fg" : "text-t3-muted hover:bg-t3-accent hover:text-t3-fg"
+            }`}
+          >
+            <ListChecks size={12} className="shrink-0" />
+            <span className="shrink-0">Plan</span>
+          </button>
         )}
         {voice.phase === "recording" ? (
           <div

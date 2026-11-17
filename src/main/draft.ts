@@ -17,6 +17,9 @@ import type { T3Server } from "./t3";
 // (apps/web/src/components/chat/useComposerSend.ts → packages/client-runtime/src/operations/commands.ts,
 // startThreadTurn → `orchestration.launchThread` with workspaceStrategy "root").
 
+/** T3's permission mode for a thread that names none (packages/contracts/src/providerPolicy.ts, DEFAULT_RUNTIME_MODE). */
+const T3_DEFAULT_RUNTIME_MODE = "full-access";
+
 /** T3's answer to `orchestration.launchThread` (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ThreadLaunchResult). */
 interface WireLaunchReply {
   threadId?: string;
@@ -30,13 +33,18 @@ export interface DraftSource {
 }
 
 /** The draft's projects, with T3's scratch checkout as the picker's "No project", listed last. */
-function draftProjects(source: DraftSource, scratchWorkspaceRoot: string | undefined): PanelProject[] {
+function draftProjects(source: DraftSource, config: WireServerConfig | undefined): PanelProject[] {
+  const serverMode = config?.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE;
+  const overrides = config?.settings?.projectSettingsOverrides ?? {};
+
   const projects = source.projects.map((project) => ({
     projectId: project.projectId,
     title: project.title,
     icon: project.icon,
-    scratch: scratchWorkspaceRoot !== undefined && sameRoot(project.workspaceRoot, scratchWorkspaceRoot),
+    scratch: config?.scratchWorkspaceRoot !== undefined && sameRoot(project.workspaceRoot, config.scratchWorkspaceRoot),
     defaultModelSelection: project.defaultModelSelection,
+    // A project's own default leads, as its web draft reads it (apps/web/src/hooks/useHandleNewThread.ts).
+    defaultRuntimeMode: overrides[project.projectId]?.defaultRuntimeMode ?? serverMode,
   }));
 
   return [...projects.filter((project) => !project.scratch), ...projects.filter((project) => project.scratch)];
@@ -54,7 +62,7 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
       rpc.close();
     }
 
-    const projects = draftProjects(source, config.scratchWorkspaceRoot);
+    const projects = draftProjects(source, config);
 
     const defaultProjectId = projects.some((project) => project.projectId === source.defaultProjectId)
       ? source.defaultProjectId
@@ -64,6 +72,7 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
       projects,
       defaultProjectId,
       defaultModelSelection: defaultModelSelection(config),
+      defaultRuntimeMode: config.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE,
       attachmentUploads: server.attachmentUploads,
       voiceTranscription: server.voiceTranscription,
     };
@@ -80,6 +89,10 @@ export async function readDraft(server: T3Server, token: string, source: DraftSo
 export interface CreateThreadInput {
   projectId: string;
   modelSelection: PanelModelSelection;
+  /** The permission mode the draft picked; T3's own default when the draft names none. */
+  runtimeMode?: string;
+  /** "default", or "plan" when the draft's plan toggle is on (providerPolicy.ts, ProviderInteractionMode). */
+  interactionMode?: string;
   text: string;
   attachments: PanelAttachment[];
 }
@@ -104,10 +117,10 @@ export async function createThread(server: T3Server, token: string, input: Creat
         // T3 names the thread from its first message, as its web composer's draft does.
         generateTitle: true,
         modelSelection: input.modelSelection,
-        // The mode the user's T3 starts threads in; its own default when the server names none
+        // The mode the draft picked, else the user's T3 default; T3's own when the server names none
         // (packages/contracts/src/providerPolicy.ts, DEFAULT_RUNTIME_MODE).
-        runtimeMode: config.settings?.defaultRuntimeMode ?? "full-access",
-        interactionMode: "default",
+        runtimeMode: input.runtimeMode ?? config.settings?.defaultRuntimeMode ?? T3_DEFAULT_RUNTIME_MODE,
+        interactionMode: input.interactionMode ?? "default",
         workspaceStrategy: { type: "root" },
         initialMessage: { messageId: randomUUID(), text, attachments: input.attachments },
       });

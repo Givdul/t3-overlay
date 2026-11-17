@@ -3,6 +3,7 @@ import type {
   PanelAttachment,
   PanelCreateReply,
   PanelDraft,
+  PanelModelOption,
   PanelModelSelection,
   PanelProject,
   PanelReply,
@@ -18,8 +19,16 @@ export interface NewThreadDraft {
   error: string | null;
   project: PanelProject | null;
   model: PanelModelSelection | null;
+  /** The permission mode the new thread starts in; the project's own default until the draft picks one. */
+  runtimeMode: string | null;
+  /** "default", or "plan" while the draft's plan toggle is on. */
+  interactionMode: string;
   selectProject(project: PanelProject): void;
   selectModel(model: PanelModelSelection): void;
+  /** Keeps the model's options, e.g. a reasoning effort, for the thread the draft creates. */
+  selectModelOptions(options: PanelModelOption[]): void;
+  selectRuntimeMode(mode: string): void;
+  setPlanMode(plan: boolean): void;
   /** Creates the thread with its first turn, through main. */
   create(text: string, attachments: PanelAttachment[]): Promise<PanelCreateReply | PanelReply>;
   retry(): void;
@@ -39,6 +48,8 @@ export function useNewThreadDraft(active: boolean): NewThreadDraft {
   const [error, setError] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [picked, setPicked] = useState<PanelModelSelection | null>(null);
+  const [pickedRuntimeMode, setPickedRuntimeMode] = useState<string | null>(null);
+  const [planMode, setPlanMode] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   // A draft opened again starts from the newest thread's project, not the last draft's pick.
@@ -50,6 +61,8 @@ export function useNewThreadDraft(active: boolean): NewThreadDraft {
     setError(null);
     setProjectId(null);
     setPicked(null);
+    setPickedRuntimeMode(null);
+    setPlanMode(false);
 
     void window.overlay.panel({ type: "draft" }).then((reply) => {
       if (!live) return;
@@ -75,12 +88,27 @@ export function useNewThreadDraft(active: boolean): NewThreadDraft {
   // (apps/web/src/lib/seedDraftModelSelection.ts); a pick holds until another project is chosen.
   const model = picked ?? project?.defaultModelSelection ?? info?.defaultModelSelection ?? null;
 
+  // The permission mode follows the project the same way, starting from its own default; plan mode is the
+  // draft's toggle, and T3 starts a thread in default mode (providerPolicy.ts, DEFAULT_PROVIDER_INTERACTION_MODE).
+  const runtimeMode = pickedRuntimeMode ?? project?.defaultRuntimeMode ?? info?.defaultRuntimeMode ?? null;
+  const interactionMode = planMode ? "plan" : "default";
+
   async function create(text: string, attachments: PanelAttachment[]): Promise<PanelCreateReply | PanelReply> {
     if (project === null) return { ok: false, error: "T3 has no project to start a thread in" };
 
     if (model === null) return { ok: false, error: "T3 has no model to start a thread on" };
 
-    return window.overlay.panel({ type: "create", projectId: project.projectId, modelSelection: model, text, attachments });
+    if (runtimeMode === null) return { ok: false, error: "T3 has no permission mode to start a thread in" };
+
+    return window.overlay.panel({
+      type: "create",
+      projectId: project.projectId,
+      modelSelection: model,
+      runtimeMode,
+      interactionMode,
+      text,
+      attachments,
+    });
   }
 
   return {
@@ -88,12 +116,22 @@ export function useNewThreadDraft(active: boolean): NewThreadDraft {
     error,
     project,
     model,
+    runtimeMode,
+    interactionMode,
     selectProject(next) {
       setProjectId(next.projectId);
-      // The new project's own default applies until the user picks a model again.
+      // The new project's own defaults apply until the user picks a model or a mode again.
       setPicked(null);
+      setPickedRuntimeMode(null);
     },
     selectModel: setPicked,
+    selectModelOptions(options) {
+      if (model === null) return;
+
+      setPicked({ ...model, options });
+    },
+    selectRuntimeMode: setPickedRuntimeMode,
+    setPlanMode,
     create,
     retry() {
       setAttempt((value) => value + 1);

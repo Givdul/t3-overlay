@@ -1,4 +1,4 @@
-import type { PanelApprovalDecision, PanelAttachment, PanelMessageContext } from "../shared/panel";
+import type { PanelApprovalDecision, PanelAttachment, PanelMessageContext, PanelModelOption } from "../shared/panel";
 import type { T3Server } from "./t3";
 
 // Client for T3's Effect RPC socket (effect/unstable/rpc, JSON serialization). One frame is a JSON
@@ -27,8 +27,8 @@ export interface WirePayload {
   createdBy?: string;
   creationSource?: string;
   dispatchMode?: { type: string };
-  // `thread.model-selection.set`: the model the thread's next turn runs on.
-  modelSelection?: { instanceId: string; model: string };
+  // `thread.model-selection.set`: the model the thread's next turn runs on, and its options.
+  modelSelection?: { instanceId: string; model: string; options?: PanelModelOption[] };
   // `orchestration.launchThread`: the new-thread draft's project, title and first turn.
   projectId?: string;
   title?: string;
@@ -73,8 +73,12 @@ export type ThreadCommand =
   | {
       type: "thread.model-selection.set";
       threadId: string;
-      modelSelection: { instanceId: string; model: string };
+      modelSelection: { instanceId: string; model: string; options?: PanelModelOption[] };
     }
+  /** The thread's permission mode (packages/contracts/src/providerPolicy.ts, RuntimeMode). */
+  | { type: "thread.runtime-mode.set"; threadId: string; runtimeMode: string }
+  /** Plan or default (providerPolicy.ts, ProviderInteractionMode). */
+  | { type: "thread.interaction-mode.set"; threadId: string; interactionMode: string }
   | { type: "thread.settle"; threadId: string }
   | { type: "thread.snooze"; threadId: string; snoozedUntil: string }
   | {

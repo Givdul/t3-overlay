@@ -463,7 +463,15 @@ export function startRemote(options: RemoteOptions): Remote {
   function absorb(current: OpenThread, result: WireHistory) {
     const detail = result.thread;
 
-    current.thread = { id: detail.threadId, projectId: detail.projectId, title: detail.title, modelSelection: null };
+    current.thread = {
+      id: detail.threadId,
+      projectId: detail.projectId,
+      title: detail.title,
+      modelSelection: null,
+      // Another machine's permission and plan mode are T3's to change there, not the overlay's.
+      runtimeMode: null,
+      interactionMode: null,
+    };
     current.runs = result.recentRuns.map((run) => ({ id: run.runId, status: run.status }));
     current.activeRunId = detail.activeRunId;
     current.pendingRequestCount = detail.pendingRequestCount;
@@ -611,7 +619,7 @@ export function startRemote(options: RemoteOptions): Remote {
         ? null
         : {
             target: next,
-            thread: { id: next.threadId, projectId: "", title: "", modelSelection: null },
+            thread: { id: next.threadId, projectId: "", title: "", modelSelection: null, runtimeMode: null, interactionMode: null },
             runs: [],
             rows: [],
             lastPosition: -1,
@@ -706,11 +714,13 @@ function viewOf(current: OpenThread): PanelView {
     items: rows.map((row) => refOf(row.item)),
     queued: [],
     // Another machine's thread is read-only here: T3 alone keeps its queue, uploads, dictation, live
-    // command output and force stop, so the composer draws none of those controls.
+    // command output and force stop, so the composer draws none of those controls. Its permission mode,
+    // plan mode and model options are the same: this machine's server takes no such setting for it.
     threadForceStop: false,
     attachmentUploads: null,
     voiceTranscription: false,
     commandOutputStreaming: false,
+    modelTraits: false,
   };
 }
 

@@ -210,6 +210,11 @@ function applyThread(state: PanelState, view: PanelView, payload: PanelEventPayl
   // T3 changing the thread's model from its own composer lands here too.
   if (payload.modelSelection !== undefined) thread = { ...thread, modelSelection: payload.modelSelection };
 
+  // So do its permission mode and plan mode, which T3's own composer can change on this thread.
+  if (payload.runtimeMode !== undefined) thread = { ...thread, runtimeMode: payload.runtimeMode };
+
+  if (payload.interactionMode !== undefined) thread = { ...thread, interactionMode: payload.interactionMode };
+
   return thread === view.thread ? state : { ...state, view: { ...view, thread } };
 }
 

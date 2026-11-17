@@ -343,7 +343,13 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           attachmentUploads={draftOpen ? (draft.info?.attachmentUploads ?? null) : (view?.attachmentUploads ?? null)}
           voiceTranscription={draftOpen ? draft.info?.voiceTranscription === true : view?.voiceTranscription === true}
           modelSelection={draftOpen ? draft.model : (view?.thread.modelSelection ?? null)}
+          modelTraits={draftOpen ? true : (view?.modelTraits ?? false)}
+          runtimeMode={draftOpen ? draft.runtimeMode : (view?.thread.runtimeMode ?? null)}
+          interactionMode={draftOpen ? draft.interactionMode : (view?.thread.interactionMode ?? null)}
           onPickModel={draftOpen ? draft.selectModel : undefined}
+          onPickModelOptions={draftOpen ? draft.selectModelOptions : undefined}
+          onPickRuntimeMode={draftOpen ? draft.selectRuntimeMode : undefined}
+          onSetPlanMode={draftOpen ? draft.setPlanMode : undefined}
           onSend={draftOpen ? draft.create : sendMessage}
           editingQueued={queuedEdit.edit !== null}
           onSaveQueuedEdit={saveQueuedEdit}
