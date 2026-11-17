@@ -18,20 +18,24 @@ import {
   type OverlaySettings,
   type OverlayState,
   type PanelEntrance,
-  type PanelTarget,
+  type PanelSurface,
   type Popover,
   type SidebarThread,
   type ThreadRef,
+  threadTarget,
 } from "../shared/types";
-import type { PanelCommand, PanelMessage } from "../shared/panel";
+import type { PanelCommand, PanelCreateReply, PanelDraftCommand, PanelDraftReply, PanelMessage } from "../shared/panel";
+import { createBackoff, STABLE_AFTER_MS } from "./backoff";
 import { rememberForeground, returnFocus, takeFocus } from "./focus";
 import { configPath, loadConfig, loadPersisted, savePersisted } from "./store";
 import { ensureSession, readServer, type T3Server } from "./t3";
-import { startThreadFeed, type ProjectWorkspace, type ThreadFeed } from "./threads";
+import { startThreadFeed, type ThreadFeed } from "./threads";
+import type { ShellProject } from "./shell";
+import { createThread, readDraft } from "./draft";
 import { startPanel, type Panel } from "./panel";
 import { createTray, refreshTray } from "./tray";
-import { launchT3, openProjectInT3 } from "./launch";
-import { dispatchCommand } from "./rpc";
+import { launchT3 } from "./launch";
+import { AuthExpiredError, dispatchCommand } from "./rpc";
 import { snoozeChoices } from "./snooze";
 
 const persisted = loadPersisted();
@@ -45,8 +49,8 @@ let panel: Panel | null = null;
 /** This PC's T3 server while the overlay is connected to it. */
 let localServer: T3Server | null = null;
 
-/** The shell's projects, so `+` can open one in T3 Code. */
-let workspaces: ProjectWorkspace[] = [];
+/** The shell's projects, which the panel's new-thread draft lists. */
+let projects: ShellProject[] = [];
 
 const state: OverlayState = {
   t3: "connecting",
@@ -155,15 +159,18 @@ function update(patch: Partial<OverlayState>) {
   broadcast();
 }
 
-function openPanel(target: PanelTarget, entrance: PanelEntrance = "slide") {
-  if (target !== null) persisted.lastThread = target;
+function openPanel(target: PanelSurface, entrance: PanelEntrance = "slide") {
+  const thread = threadTarget(target);
+
+  // The draft is not a thread: the hotkey still reopens the last thread that was read.
+  if (thread !== null) persisted.lastThread = thread;
   save();
   update({ panel: target, panelEntrance: entrance, popover: null, unread: unreadWithout(target) });
-  panel?.setTarget(target);
+  panel?.setTarget(thread);
 }
 
 /** A thread is read once the panel shows it. */
-function unreadWithout(panel: PanelTarget): ThreadRef[] {
+function unreadWithout(panel: PanelSurface): ThreadRef[] {
   return state.unread.filter((thread) => !sameThread(panel, thread));
 }
 
@@ -214,51 +221,84 @@ function setThreads(threads: SidebarThread[]) {
 
 // ---------------------------------------------------------------- T3 connection
 
+/** The shell connection's retry ladder: the panel's own socket climbs the same policy on its own. */
+const backoff = createBackoff();
+let retryTimer: NodeJS.Timeout | null = null;
+
+/** When the shell connection came up, so one that stayed up long enough resets the ladder. */
+let connectedAt: number | null = null;
+
+/** The server and token the live panel belongs to: another connection needs a new panel. */
+let panelSession: { origin: string; token: string } | null = null;
+
 async function connect() {
   const server = await readServer();
   localServer = server;
   if (server === null) {
-    stopConnection();
+    stopFeed();
     update({ t3: "offline", threads: [], working: [] });
-    setTimeout(connect, 5000);
+    retryConnection();
     return;
   }
   try {
     const token = await ensureSession(server);
     update({ t3: "connected" });
     startFeed(server, token);
+    // The feed's socket opens a moment later; losing it before the reset window keeps the ladder high.
+    connectedAt = Date.now();
   } catch (error) {
     console.error("[t3] connect failed", error);
     update({ t3: "offline" });
-    setTimeout(connect, 5000);
+    retryConnection();
   }
 }
 
-function stopConnection() {
+/** Retries the connection on the shared backoff, so a restarted server does not draw every retry at once. */
+function retryConnection() {
+  if (retryTimer !== null) return;
+
+  if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) backoff.reset();
+
+  connectedAt = null;
+  const delay = backoff.nextDelay();
+  console.warn(`[t3] reconnecting in ${delay}ms`);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void connect();
+  }, delay);
+}
+
+function stopFeed() {
   feed?.stop();
   feed = null;
-  panel?.stop();
-  panel = null;
 }
 
 function startFeed(server: T3Server, token: string) {
-  stopConnection();
+  stopFeed();
   feed = startThreadFeed({
     server,
     token,
     onThreads: setThreads,
-    onProjects: (projects) => {
-      if (JSON.stringify(projects) === JSON.stringify(workspaces)) return;
+    onProjects: (next) => {
+      if (JSON.stringify(next) === JSON.stringify(projects)) return;
 
-      workspaces = projects;
+      projects = next;
     },
     onAuthExpired: () => refreshSession(server),
     onLost: () => {
-      stopConnection();
+      // T3 dropped the shell's socket. The panel has its own socket and resumes on its own.
+      stopFeed();
       update({ t3: "offline", threads: [], working: [] });
-      setTimeout(connect, 5000);
+      retryConnection();
     },
   });
+
+  // A reconnect of the same server with the same token leaves the panel's stream, and the sequence it
+  // resumes after, alone; a new server or a fresh token needs a new one.
+  if (panel !== null && panelSession?.origin === server.origin && panelSession.token === token) return;
+
+  panel?.stop();
+  panelSession = { origin: server.origin, token };
   panel = startPanel({
     server,
     token,
@@ -266,7 +306,7 @@ function startFeed(server: T3Server, token: string) {
     onMessage: sendPanelMessage,
     onAuthExpired: () => refreshSession(server),
   });
-  panel.setTarget(state.panel);
+  panel.setTarget(threadTarget(state.panel));
 }
 
 function sendPanelMessage(message: PanelMessage) {
@@ -298,6 +338,22 @@ function createWindow() {
       sandbox: true,
     },
   });
+  // Electron approves every permission request when no handler is installed. The overlay's own page asks
+  // for two: the microphone for the composer's dictation, and the clipboard for a message's Copy button
+  // (`navigator.clipboard.writeText` is a `clipboard-sanitized-write`). Everything else is refused, and
+  // only the overlay's own page may ask.
+  const contents = win.webContents;
+  contents.session.setPermissionRequestHandler((sender, permission, callback, details) => {
+    // The composer records audio only; the camera is never opened.
+    const audio = permission === "media" && "mediaTypes" in details && details.mediaTypes?.every((type) => type === "audio") === true;
+
+    callback(sender === contents && (permission === "clipboard-sanitized-write" || audio));
+  });
+  contents.session.setPermissionCheckHandler(
+    (sender, permission, _origin, details) =>
+      sender === contents &&
+      (permission === "clipboard-sanitized-write" || (permission === "media" && details.mediaType !== "video")),
+  );
   // The overlay's own page never navigates or opens windows; links go to the system browser.
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -485,7 +541,7 @@ onHost("overlay:extent", (_event, next: Partial<Extent>) => {
   broadcast();
 });
 
-onHost("overlay:open", (_event, target: PanelTarget) => openPanel(target));
+onHost("overlay:open", (_event, target: PanelSurface) => openPanel(target));
 
 onHost("overlay:popover", (_event, popover: Popover | null) => {
   // Until the new popover reports its height, the window's shape covers its largest size.
@@ -575,20 +631,7 @@ onHost("overlay:open-link", (_event, url: string) => {
   if (parsed.protocol === "https:" || parsed.protocol === "http:") void shell.openExternal(parsed.href);
 });
 
-onHost("overlay:open-in-t3", (_event, target: ThreadRef | "new") => {
-  if (target === "new") {
-    // T3 has no empty new-thread link: its `t3code://new` needs a prompt. Opening the project's
-    // workspace is what brings up T3's own new-thread draft.
-    const newest = [...state.threads, ...state.working].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-
-    const workspaceRoot =
-      workspaces.find((project) => project.projectId === newest?.projectId)?.workspaceRoot ?? workspaces[0]?.workspaceRoot;
-
-    if (workspaceRoot !== undefined) openProjectInT3(workspaceRoot);
-
-    return;
-  }
-
+onHost("overlay:open-in-t3", (_event, target: ThreadRef) => {
   void shell.openExternal(`t3code://threads/${encodeURIComponent(target.environmentId)}/${encodeURIComponent(target.threadId)}`);
 });
 
@@ -597,7 +640,42 @@ onHost("overlay:settings", (_event, patch: Partial<OverlaySettings>) => {
   save();
 });
 
+/** The new-thread draft: the shell's projects and the panel's opening live in main, not in its socket. */
+async function draftCommand(command: PanelDraftCommand): Promise<PanelDraftReply | PanelCreateReply> {
+  const server = state.t3 === "connected" ? localServer : null;
+
+  if (server === null) return { ok: false, error: "T3 is not connected" };
+
+  try {
+    const token = await ensureSession(server);
+
+    if (command.type === "draft") {
+      const newest = [...state.threads, ...state.working].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+
+      return await readDraft(server, token, { projects, defaultProjectId: newest?.projectId ?? null });
+    }
+
+    const reply = await createThread(server, token, command);
+
+    // The panel switches to the thread it just made; the shell feed adds it to the sidebar.
+    if (reply.ok) openPanel({ environmentId: server.environmentId, threadId: reply.threadId });
+
+    return reply;
+  } catch (error) {
+    // A rejected token is re-minted the same way the panel's own commands do it; the draft reopens after.
+    if (error instanceof AuthExpiredError) {
+      refreshSession(server);
+
+      return { ok: false, error: error.message };
+    }
+
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 handleHostWith("overlay:panel-command", (command: PanelCommand) => {
+  if (command.type === "draft" || command.type === "create") return draftCommand(command);
+
   if (panel === null) return { ok: false as const, error: "T3 is not connected" };
 
   return panel.command(command);

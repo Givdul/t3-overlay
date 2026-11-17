@@ -1,5 +1,7 @@
 import { generatedIcon } from "../shared/projectIcon";
+import type { PanelModelSelection } from "../shared/panel";
 import type { ProjectIcon, SidebarThread, ThreadState } from "../shared/types";
+import { trimModelSelection } from "./panel";
 
 // Loose views of T3's shell stream (packages/contracts/src/orchestrationV2.ts, OrchestrationV2ShellStreamItem).
 // Only the fields the sidebar reads are typed, so new T3 fields never break decoding.
@@ -28,6 +30,23 @@ interface ProjectShell {
   workspaceRoot: string;
   faviconPath?: string | null;
   projectIcon?: { kind: string; name?: string; color?: string; text?: string; emoji?: string } | null;
+  defaultModelSelection?: { instanceId?: string; provider?: string; model?: string } | null;
+  pinnedAt?: string | null;
+  archivedAt?: string | null;
+  updatedAt?: string;
+}
+
+/** A project as the new-thread draft's picker lists it (packages/contracts/src/orchestrationProject.ts). */
+export interface ShellProject {
+  projectId: string;
+  title: string;
+  workspaceRoot: string;
+  icon: ProjectIcon;
+  defaultModelSelection: PanelModelSelection | null;
+  /** T3's pinned projects lead its pickers. */
+  pinned: boolean;
+  /** The latest update among the project's threads, for the picker's order. */
+  updatedAt: string;
 }
 
 export type ShellItem =
@@ -119,9 +138,41 @@ export class ShellModel {
     }
   }
 
-  /** Every project's checkout, so the overlay can open one in T3 Code itself. */
-  projectWorkspaces(): { projectId: string; workspaceRoot: string }[] {
-    return [...this.projects.values()].map((project) => ({ projectId: project.id, workspaceRoot: project.workspaceRoot }));
+  /** The draft's projects: pinned first, then the ones whose threads changed last. */
+  projectPicker(): ShellProject[] {
+    const latest = new Map<string, string>();
+
+    for (const thread of this.threads.values()) {
+      if (thread.archivedAt || thread.deletedAt) continue;
+
+      const current = latest.get(thread.projectId);
+
+      if (current === undefined || current < thread.updatedAt) latest.set(thread.projectId, thread.updatedAt);
+    }
+
+    const picker: ShellProject[] = [];
+
+    for (const project of this.projects.values()) {
+      if (project.archivedAt) continue;
+
+      picker.push({
+        projectId: project.id,
+        title: project.title,
+        workspaceRoot: project.workspaceRoot,
+        icon: projectIcon(project, this.favicons.get(`${project.workspaceRoot}\n${project.faviconPath ?? ""}`)),
+        defaultModelSelection: trimModelSelection(project.defaultModelSelection),
+        pinned: Boolean(project.pinnedAt),
+        updatedAt: latest.get(project.id) ?? project.updatedAt ?? "",
+      });
+    }
+
+    return picker.sort((left, right) => {
+      if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+
+      if (left.updatedAt !== right.updatedAt) return right.updatedAt.localeCompare(left.updatedAt);
+
+      return left.title.localeCompare(right.title);
+    });
   }
 
   sidebar(): SidebarThread[] {

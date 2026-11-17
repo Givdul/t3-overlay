@@ -1,19 +1,36 @@
 import { ArrowDown, ExternalLink } from "lucide-react";
 import { useEffect, useReducer, useRef, useState, type CSSProperties } from "react";
-import { threadKey, type OverlaySettings, type OverlayState, type PanelTarget, type SidebarThread } from "../../shared/types";
+import type { PanelAttachment, PanelQueuedMessage, PanelReply, PanelThreadCommand } from "../../shared/panel";
+import {
+  NEW_THREAD,
+  threadKey,
+  threadTarget,
+  type OverlaySettings,
+  type OverlayState,
+  type SidebarThread,
+  type ThreadRef,
+} from "../../shared/types";
 import { Composer, type ComposerHandle } from "./panel/Composer";
+import { ProjectPicker } from "./panel/ProjectPicker";
 import { Timeline } from "./panel/Timeline";
-import { activeRun, applyPanelMessage, initialState, needsReply, pendingRequests } from "./panel/model";
+import { activeRun, applyPanelMessage, forceStopNotice, initialState, needsReply, pendingRequests, presentRunStop } from "./panel/model";
+import { useDraftFocus, useNewThreadDraft, type NewThreadDraft } from "./panel/useNewThreadDraft";
+import { useQueuedEdit } from "./panel/useQueuedEdit";
+import { useStopNotice } from "./panel/useStopNotice";
 
 /**
  * The chat panel: a title row, the thread's timeline and a composer, all drawn here. Main owns the
- * socket and forwards the thread's projection; this file draws it.
+ * socket and forwards the thread's projection; this file draws it. Pressing `+` opens the same panel on
+ * the new-thread draft, where the composer starts a thread instead of joining one.
  */
 export function Panel({ state, style }: { state: OverlayState; style: CSSProperties }) {
   const target = state.panel;
-  const targetKey = target === null ? "none" : threadKey(target);
-  const threadId = target?.threadId ?? null;
+  const thread = threadTarget(target);
+  const draftOpen = target === NEW_THREAD;
+  const targetKey = target === null ? "none" : thread === null ? NEW_THREAD : threadKey(thread);
+  const threadId = thread?.threadId ?? null;
   const [panel, dispatch] = useReducer(applyPanelMessage, targetKey, initialState);
+  const draft = useNewThreadDraft(draftOpen);
   const [composerOpen, setComposerOpen] = useState(false);
   const [text, setText] = useState("");
   const [focused, setFocused] = useState(false);
@@ -37,6 +54,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     setShowToEnd(false);
     follow.current = true;
   }, [targetKey]);
+
+  useDraftFocus(draftOpen && draft.info !== null, composer);
 
   useEffect(
     () =>
@@ -69,17 +88,40 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
   const view = panel.view;
   const reply = needsReply(view);
   const running = activeRun(view);
+  const runStop = presentRunStop(view);
   const pending = pendingRequests(view);
+  // A queued message being rewritten, and the last force stop's wording; both are per-target.
+  const queuedEdit = useQueuedEdit(targetKey, view);
+  const stopNotice = useStopNotice(targetKey);
   const { side, settings } = state;
-  const known = knownThread(state, target);
-  const title = view?.thread.title || known?.title || "Thread";
+  const known = knownThread(state, thread);
+  const title = draftOpen ? "New thread" : view?.thread.title || known?.title || "Thread";
   const contextLabel = [known?.projectName, known?.environmentLabel].filter(Boolean).join(" · ");
 
-  const statusLabel =
-    panel.status === "ended" ? "Disconnected" : panel.status === "connecting" ? "Connecting…" : running !== null ? "Working" : reply ? "Waiting for you" : "";
+  // This thread is connecting again with its own projection already drawn: the socket dropped and main
+  // is reopening it, rather than a thread being read for the first time.
+  const reconnecting = !draftOpen && panel.status === "connecting" && view !== null && view.thread.id === threadId;
 
-  const canCompose = target !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
-  const folded = canCompose && settings.compactComposer && !reply && !composerOpen && text === "" && !busy && !focused;
+  const statusLabel = draftOpen
+    ? ""
+    : panel.status === "ended"
+      ? "Disconnected"
+      : reconnecting
+        ? "Reconnecting…"
+        : panel.status === "connecting"
+          ? "Connecting…"
+          : running !== null
+            ? "Working"
+            : reply
+              ? "Waiting for you"
+              : "";
+
+  const canCompose = draftOpen
+    ? state.t3 === "connected" && draft.info !== null
+    : thread !== null && panel.status !== "ended" && state.t3 === "connected" && view !== null;
+
+  // A draft keeps its whole card open: the project picker lives on it.
+  const folded = canCompose && !draftOpen && settings.compactComposer && !reply && !composerOpen && text === "" && !busy && !focused;
   const titleInCard = settings.titleInComposer && canCompose && !folded;
   const visible = target !== null;
 
@@ -145,6 +187,59 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
     if (text === "" && !busy) setComposerOpen(false);
   };
 
+  // Editing puts the queued message's words in the composer; cancelling puts the old draft back.
+  function beginQueuedEdit(message: PanelQueuedMessage) {
+    // An open question holds the composer, as it does in T3, so the edit would happen out of sight.
+    if (pending.questions.length > 0) return;
+
+    queuedEdit.begin(message, text);
+    setComposerOpen(true);
+    composer.current?.edit(message.text);
+  }
+
+  function cancelQueuedEdit() {
+    const current = queuedEdit.edit;
+
+    queuedEdit.clear();
+
+    if (current !== null) composer.current?.edit(current.restoreText);
+  }
+
+  async function saveQueuedEdit(value: string, attachments: PanelAttachment[]): Promise<PanelReply> {
+    const editing = queuedEdit.edit;
+
+    if (editing === null) return { ok: false, error: "No queued message is being edited" };
+    const message = view?.queued.find((candidate) => candidate.runId === editing.runId);
+
+    const edit: Extract<PanelThreadCommand, { type: "editQueued" }> = {
+      type: "editQueued",
+      runId: editing.runId,
+      text: value,
+      // T3 replaces a queued message's attachments on edit, so its own ride along with the new ones.
+      attachments: [...(message?.attachments ?? []), ...attachments],
+    };
+
+    // Its composer context rides along unchanged, or an edit would drop the message's `@`-mentions.
+    if (message?.context !== undefined) edit.context = message.context;
+    const save = await window.overlay.panel(edit);
+
+    // Main re-reads the projection; a failed save leaves the edit open with the user's words in it.
+    if (save.ok) queuedEdit.clear();
+
+    return save.ok ? { ok: true } : { ok: false, error: save.error };
+  }
+
+  async function cancelQueued(message: PanelQueuedMessage): Promise<string | null> {
+    const cancelled = await window.overlay.panel({ type: "cancelQueued", runId: message.runId });
+
+    if (!cancelled.ok) return cancelled.error;
+
+    // The message the composer was rewriting is gone; the words in the box stay for a new message.
+    if (queuedEdit.edit?.runId === message.runId) queuedEdit.clear();
+
+    return null;
+  }
+
   return (
     <div
       className={`group/chat flex min-h-0 flex-col ${entrance} ${outlineClass(settings.textOutline)} ${canCompose && !folded ? "pb-4" : ""}`}
@@ -160,25 +255,39 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
         } as CSSProperties
       }
     >
-      {!titleInCard && <TitleRow title={title} target={target} />}
+      {!titleInCard && <TitleRow title={title} target={thread} />}
 
       <div className="relative flex min-h-0 flex-1">
         <div ref={scroller} onScroll={onScroll} className={historyClass} style={{ direction: side === "left" ? "rtl" : "ltr" }}>
           {/* The inner lane flips back to LTR, and its tail leaves room for the composer's overlap. */}
           <div style={{ direction: "ltr" }} className="px-3 pt-3">
-            {view !== null ? (
-              <Timeline view={view} pending={pending} onLink={(url) => window.overlay.openLink(url)} />
+            {draftOpen ? (
+              <DraftHint draft={draft} />
+            ) : view !== null ? (
+              <Timeline
+                view={view}
+                pending={pending}
+                stop={runStop}
+                connection={panel.connection}
+                forceStopNotice={stopNotice.notice}
+                editingRunId={queuedEdit.edit?.runId ?? null}
+                onForceStopResult={stopNotice.show}
+                onEditQueued={beginQueuedEdit}
+                onCancelEditQueued={cancelQueuedEdit}
+                onCancelQueued={cancelQueued}
+                onLink={(url) => window.overlay.openLink(url)}
+              />
             ) : panel.status === "ended" ? (
               <PlaceholderCard
                 title="This thread is closed here"
                 text={panel.reason ?? "The connection to T3 stopped."}
-                target={target}
+                target={thread}
               />
             ) : state.t3 === "offline" ? (
               <PlaceholderCard
                 title="T3 Code is not running"
                 text="Start T3 Code, and the panel reconnects on its own."
-                target={target}
+                target={thread}
               />
             ) : (
               <p className="py-2 text-center text-[11px] text-t3-muted">Loading the thread…</p>
@@ -186,6 +295,12 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           </div>
           <div aria-hidden style={{ height: canCompose && !folded ? "28px" : "12px" }} />
         </div>
+
+        {reconnecting && (
+          <div className="pointer-events-none absolute top-2 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--t3-border)] bg-[var(--t3-popover)] px-2 py-[3px] text-[10px] font-medium text-t3-muted shadow-lg shadow-black/30">
+            Reconnecting…
+          </div>
+        )}
 
         {showToEnd && (
           <button
@@ -202,10 +317,24 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
       {canCompose && (
         <Composer
           side={side}
-          running={running}
-          contextLabel={contextLabel}
+          running={draftOpen ? null : running}
+          context={
+            draftOpen ? (
+              <ProjectPicker projects={draft.info?.projects ?? []} current={draft.project} onSelect={draft.selectProject} />
+            ) : (
+              contextLabel
+            )
+          }
           statusLabel={statusLabel}
           title={titleInCard ? title : null}
+          threadKey={targetKey}
+          attachmentUploads={draftOpen ? (draft.info?.attachmentUploads ?? null) : (view?.attachmentUploads ?? null)}
+          voiceTranscription={draftOpen ? draft.info?.voiceTranscription === true : view?.voiceTranscription === true}
+          modelSelection={draftOpen ? draft.model : (view?.thread.modelSelection ?? null)}
+          onPickModel={draftOpen ? draft.selectModel : undefined}
+          onSend={draftOpen ? draft.create : sendMessage}
+          editingQueued={queuedEdit.edit !== null}
+          onSaveQueuedEdit={saveQueuedEdit}
           folded={folded}
           onTextChange={setText}
           onFocusChange={onFocusChange}
@@ -254,28 +383,27 @@ function outlineClass(outline: OverlaySettings["textOutline"]): string {
   return outline === "off" ? "" : `text-outline-${outline}`;
 }
 
-function TitleRow({ title, target }: { title: string; target: PanelTarget }) {
+function TitleRow({ title, target }: { title: string; target: ThreadRef | null }) {
   return (
     <div
       className="flex h-[34px] shrink-0 items-center gap-2 truncate rounded-t-[12px] border border-[var(--t3-chat-border)] bg-[var(--t3-chat-bg)] pr-1.5 pl-3 text-[13px] font-semibold text-t3-fg"
       style={{ borderBottomColor: "color-mix(in srgb, var(--t3-border) 50%, transparent)" }}
     >
       <span className="min-w-0 flex-1 truncate">{title}</span>
-      <OpenInT3 target={target} />
+      {target !== null && <OpenInT3 target={target} />}
     </div>
   );
 }
 
 /** Hands the thread to T3 Code, which registers the `t3code://` scheme and routes it. */
-function OpenInT3({ target }: { target: PanelTarget }) {
+function OpenInT3({ target }: { target: ThreadRef }) {
   return (
     <button
       type="button"
       title="Open in T3"
       aria-label="Open in T3"
-      disabled={target === null}
-      onClick={() => (target === null ? undefined : window.overlay.openInT3(target))}
-      className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-t3-muted transition-colors hover:bg-t3-accent hover:text-t3-fg disabled:pointer-events-none"
+      onClick={() => window.overlay.openInT3(target)}
+      className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-t3-muted transition-colors hover:bg-t3-accent hover:text-t3-fg"
     >
       <ExternalLink size={12} />
       Open in T3
@@ -283,17 +411,48 @@ function OpenInT3({ target }: { target: PanelTarget }) {
   );
 }
 
-function PlaceholderCard({ title, text, target }: { title: string; text: string; target: PanelTarget }) {
+function PlaceholderCard({ title, text, target }: { title: string; text: string; target: ThreadRef | null }) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-xl border border-[var(--t3-border)] bg-[var(--t3-popover)] p-4 text-center">
       <p className="text-[13px] text-t3-fg">{title}</p>
       <p className="text-[11px] text-t3-muted">{text}</p>
-      <OpenInT3 target={target} />
+      {target !== null && <OpenInT3 target={target} />}
     </div>
   );
 }
 
-function knownThread(state: OverlayState, target: PanelTarget): SidebarThread | undefined {
+/** What the draft's empty history says: why it has no projects, or that sending starts the thread. */
+function DraftHint({ draft }: { draft: NewThreadDraft }) {
+  if (draft.error !== null) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-[var(--t3-border)] bg-[var(--t3-popover)] p-4 text-center">
+        <p className="text-[11px] whitespace-pre-wrap text-t3-muted">{draft.error}</p>
+        <button
+          type="button"
+          onClick={draft.retry}
+          className="rounded-md px-2 py-1 text-[11px] font-medium text-t3-fg transition-colors hover:bg-t3-accent"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (draft.info === null) return <p className="py-2 text-center text-[11px] text-t3-muted">Loading projects…</p>;
+
+  if (draft.info.projects.length === 0) {
+    return <p className="py-2 text-center text-[11px] text-t3-muted">T3 has no projects to start a thread in.</p>;
+  }
+
+  return <p className="py-2 text-center text-[11px] text-t3-muted">Send a message to start the thread.</p>;
+}
+
+/** The open thread's send: a message into it, queued behind its run when one is active. */
+function sendMessage(text: string, attachments: PanelAttachment[], queue: boolean) {
+  return window.overlay.panel({ type: "send", text, attachments, queue });
+}
+
+function knownThread(state: OverlayState, target: ThreadRef | null): SidebarThread | undefined {
   if (target === null) return undefined;
 
   return [...state.threads, ...state.working].find(

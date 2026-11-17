@@ -1,11 +1,12 @@
+import type { PanelApprovalDecision, PanelAttachment, PanelMessageContext } from "../shared/panel";
 import type { T3Server } from "./t3";
 
 // Client for T3's Effect RPC socket (effect/unstable/rpc, JSON serialization). One frame is a JSON
 // object or an array of them. Every stream Chunk must be acked, or the server stops after a handful
-// of chunks. Each connection carries one stream plus any number of unary calls on that socket.
+// of chunks. A connection carries any number of streams and unary calls, each keyed by its request id.
 //
-// `connect` is generic over the stream value and request reply types: each caller names the slice of
-// T3's contract it reads, and that caller decodes it. Nothing here inspects a payload.
+// `connect` is generic over the request reply type, and `stream` over one stream's value: each caller
+// names the slice of T3's contract it reads, and that caller decodes it. Nothing here inspects a payload.
 
 /** The request payloads this client sends; T3's RPC contracts name the same fields. */
 export interface WirePayload {
@@ -18,15 +19,31 @@ export interface WirePayload {
   commandId?: string;
   messageId?: string;
   text?: string;
-  attachments?: [];
+  attachments?: PanelAttachment[];
+  // `attachments.createUploadUrl` asks for one upload slot; its `type` selects image or file.
+  name?: string;
+  mimeType?: string;
+  sizeBytes?: number;
   createdBy?: string;
   creationSource?: string;
   dispatchMode?: { type: string };
+  // `thread.model-selection.set`: the model the thread's next turn runs on.
+  modelSelection?: { instanceId: string; model: string };
+  // `orchestration.launchThread`: the new-thread draft's project, title and first turn.
+  projectId?: string;
+  title?: string;
+  generateTitle?: boolean;
+  runtimeMode?: string;
+  interactionMode?: string;
+  workspaceStrategy?: { type: string };
+  initialMessage?: { messageId: string; text: string; attachments: PanelAttachment[] };
   runId?: string;
   snoozedUntil?: string;
   requestId?: string;
-  decision?: string;
+  decision?: PanelApprovalDecision;
   answers?: Record<string, string | string[]>;
+  // `queued-run.edit` carries the queued message's own context, so an edit keeps its `@`-mentions.
+  context?: PanelMessageContext;
 }
 
 /** A thread command for T3's orchestration engine (packages/contracts, OrchestrationCommand). */
@@ -36,19 +53,35 @@ export type ThreadCommand =
       threadId: string;
       messageId: string;
       text: string;
-      attachments: [];
+      attachments: PanelAttachment[];
       createdBy: "user";
       creationSource: "web";
       dispatchMode: { type: "start_immediately" } | { type: "queue_after_active" };
     }
-  | { type: "run.interrupt"; threadId: string; runId: string }
+  | { type: "thread.stop"; threadId: string }
+  /** The queued message a user cancels or rewrites (packages/contracts/src/orchestrationV2.ts). */
+  | { type: "queued-run.cancel"; threadId: string; runId: string }
+  | {
+      type: "queued-run.edit";
+      threadId: string;
+      runId: string;
+      text: string;
+      attachments?: PanelAttachment[];
+      /** The queued message's composer context, which replacing its text must not drop. */
+      context?: PanelMessageContext;
+    }
+  | {
+      type: "thread.model-selection.set";
+      threadId: string;
+      modelSelection: { instanceId: string; model: string };
+    }
   | { type: "thread.settle"; threadId: string }
   | { type: "thread.snooze"; threadId: string; snoozedUntil: string }
   | {
       type: "runtime-request.respond";
       threadId: string;
       requestId: string;
-      decision?: "accept" | "decline";
+      decision?: PanelApprovalDecision;
       answers?: Record<string, string | string[]>;
     };
 
@@ -67,8 +100,8 @@ interface WireFrame {
   requestId?: string | number;
 }
 
-type ServerFrame<V, R> =
-  | { _tag: "Chunk"; requestId: string | number; values: V[] }
+type ServerFrame<R> =
+  | { _tag: "Chunk"; requestId: string | number; values: unknown[] }
   | { _tag: "Exit"; requestId: string | number; exit: Exit<R> }
   | { _tag: "Defect"; defect?: string }
   | { _tag: "Pong" }
@@ -95,8 +128,12 @@ export interface StreamHandlers<V> {
   onClose: (reason: string) => void;
 }
 
-export interface T3Rpc<V, R> {
-  stream(tag: string, payload: WirePayload, handlers: StreamHandlers<V>): () => void;
+/** T3's socket open timeout; a connect that never opens counts as a failed attempt (packages/client-runtime/src/rpc/session.ts, SOCKET_OPEN_TIMEOUT). */
+const SOCKET_OPEN_TIMEOUT_MS = 15_000;
+
+export interface T3Rpc<R> {
+  /** One stream on the shared socket; its caller names the value type it decodes (T3's `V`). */
+  stream<V>(tag: string, payload: WirePayload, handlers: StreamHandlers<V>): () => void;
   /** `T` is one of the reply shapes this connection's caller reads; T3 answers it on the Exit frame. */
   request<T extends R>(tag: string, payload: WirePayload): Promise<T>;
   /** A command: T3 answers it with no value, and the call resolves once it has accepted it. */
@@ -105,7 +142,7 @@ export interface T3Rpc<V, R> {
 }
 
 /** Opens one authenticated socket to the T3 server. Throws AuthExpiredError when T3 rejects the token. */
-export async function connect<V, R>(server: T3Server, token: string): Promise<T3Rpc<V, R>> {
+export async function connect<R>(server: T3Server, token: string): Promise<T3Rpc<R>> {
   const url = new URL("/ws", server.origin.replace(/^http/, "ws"));
   url.searchParams.set("orchestrationProtocol", "2");
   url.searchParams.set("wsTicket", await websocketTicket(server, token));
@@ -113,14 +150,30 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
 
   let nextRequest = 0;
   let closed = false;
-  const streams = new Map<string, StreamHandlers<V>>();
+  const streams = new Map<string, StreamHandlers<unknown>>();
   const requests = new Map<string, { resolve: (value: R | undefined) => void; reject: (error: Error) => void }>();
   // Armed once the socket opens: a refused connect never creates a timer to leak.
   let ping: NodeJS.Timeout | undefined;
 
+  // A connect that neither opens nor errors would otherwise wait for the OS, and its caller would never
+  // retry. The timeout closes the half-open socket and fails like a refused connect, so the caller's own
+  // backoff (main/backoff.ts) retries it.
   await new Promise<void>((resolve, reject) => {
-    socket.addEventListener("open", () => resolve(), { once: true });
-    socket.addEventListener("error", () => reject(new Error("socket error")), { once: true });
+    const timeout = setTimeout(() => {
+      // Fail with the timeout first: closing a half-open socket can also raise its own error.
+      reject(new Error(`T3 did not open the socket within ${SOCKET_OPEN_TIMEOUT_MS / 1000}s`));
+      socket.close();
+    }, SOCKET_OPEN_TIMEOUT_MS);
+
+    const settle = (error?: Error) => {
+      clearTimeout(timeout);
+
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+
+    socket.addEventListener("open", () => settle(), { once: true });
+    socket.addEventListener("error", () => settle(new Error("socket error")), { once: true });
   });
 
   ping = setInterval(() => send({ _tag: "Ping" }), 10_000);
@@ -143,8 +196,8 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
 
   socket.addEventListener("message", (event) => {
     // SAFETY: T3 sends JSON in the frames above (effect/unstable/rpc); the fields read here are its
-    // envelope, and the payload values stay typed by the caller's V until it decodes them.
-    const parsed = JSON.parse(String(event.data)) as ServerFrame<V, R> | ServerFrame<V, R>[];
+    // envelope, and the payload values stay typed by the caller's stream until it decodes them.
+    const parsed = JSON.parse(String(event.data)) as ServerFrame<R> | ServerFrame<R>[];
 
     for (const frame of Array.isArray(parsed) ? parsed : [parsed]) {
       if (frame._tag === "Chunk" && "values" in frame) {
@@ -214,14 +267,17 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
   }
 
   return {
-    stream(tag, payload, handlers) {
+    stream<V>(tag: string, payload: WirePayload, handlers: StreamHandlers<V>) {
       const id = String(++nextRequest);
-      streams.set(id, handlers);
+      // SAFETY: this request's frames are the V values its caller named; the map keeps them erased.
+      streams.set(id, handlers as StreamHandlers<unknown>);
       send({ _tag: "Request", id, tag, payload, headers: [] });
 
       return () => {
         if (!streams.delete(id)) return;
 
+        // T3 ends the request on its side too, or the stream would keep reading into the socket.
+        send({ _tag: "Interrupt", requestId: id });
         handlers.onClose("stream stopped");
       };
     },
@@ -246,9 +302,14 @@ export async function connect<V, R>(server: T3Server, token: string): Promise<T3
  */
 async function websocketTicket(server: T3Server, token: string): Promise<string> {
   const headers = { authorization: `Bearer ${token}` };
-  let response = await fetch(`${server.origin}/api/auth/websocket-ticket/rpc`, { method: "POST", headers });
+  // A server that accepts the request and never answers would hold `connect` past the socket-open
+  // timeout, so the caller's backoff would never run. The ticket gets the same budget the socket has.
+  const timeout = () => AbortSignal.timeout(SOCKET_OPEN_TIMEOUT_MS);
+  let response = await fetch(`${server.origin}/api/auth/websocket-ticket/rpc`, { method: "POST", headers, signal: timeout() });
 
-  if (response.status === 404) response = await fetch(`${server.origin}/api/auth/websocket-ticket`, { method: "POST", headers });
+  if (response.status === 404) {
+    response = await fetch(`${server.origin}/api/auth/websocket-ticket`, { method: "POST", headers, signal: timeout() });
+  }
 
   if (response.status === 401) throw new AuthExpiredError("T3 rejected the overlay session");
 
@@ -262,7 +323,7 @@ async function websocketTicket(server: T3Server, token: string): Promise<string>
 
 /** Sends one command on a short connection and resolves once T3 has accepted it. */
 export async function dispatchCommand(server: T3Server, token: string, command: ThreadCommand): Promise<void> {
-  const rpc = await connect<never, never>(server, token);
+  const rpc = await connect<never>(server, token);
   let timeout: NodeJS.Timeout | undefined;
 
   try {

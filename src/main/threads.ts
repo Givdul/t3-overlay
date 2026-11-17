@@ -1,24 +1,18 @@
 import type { SidebarThread } from "../shared/types";
 import { AuthExpiredError, connect } from "./rpc";
-import { ShellModel, sortSidebar, type ShellItem } from "./shell";
+import { ShellModel, sortSidebar, type ShellItem, type ShellProject } from "./shell";
 import type { T3Server } from "./t3";
 
 export interface ThreadFeed {
   stop(): void;
 }
 
-/** A project's checkout, as T3 knows it. */
-export interface ProjectWorkspace {
-  projectId: string;
-  workspaceRoot: string;
-}
-
 export interface FeedOptions {
   server: T3Server;
   token: string;
   onThreads: (threads: SidebarThread[]) => void;
-  /** The shell's projects: main opens one in T3 when the panel's `+` asks for a new thread. */
-  onProjects: (projects: ProjectWorkspace[]) => void;
+  /** The shell's projects, which the panel's new-thread draft lists. */
+  onProjects: (projects: ShellProject[]) => void;
   onAuthExpired: () => void;
   onLost: () => void;
 }
@@ -37,15 +31,15 @@ export function startThreadFeed(options: FeedOptions): ThreadFeed {
       };
 
       const model = new ShellModel(descriptor.environmentId, descriptor.label ?? "This PC");
-      const rpc = await connect<ShellItem, never>(options.server, options.token);
+      const rpc = await connect<never>(options.server, options.token);
 
       stopStream = () => rpc.close();
-      rpc.stream("orchestration.subscribeShell", {}, {
+      rpc.stream<ShellItem>("orchestration.subscribeShell", {}, {
         onValue: (value) => {
           if (stopped || !model.apply(value) || !model.hasSnapshot) return;
 
           options.onThreads(sortSidebar(model.sidebar()));
-          options.onProjects(model.projectWorkspaces());
+          options.onProjects(model.projectPicker());
         },
         onClose: (reason) => {
           console.warn("[t3] shell stream closed:", reason);

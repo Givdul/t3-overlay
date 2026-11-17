@@ -6,19 +6,28 @@ import {
   CircleCheck,
   CircleDashed,
   CircleHelp,
+  CircleStop,
   Copy,
   FilePenLine,
+  FileText,
   Globe,
+  Image as ImageIcon,
   LoaderCircle,
+  Pencil,
   Search,
   Terminal,
+  TriangleAlert,
   Wrench,
+  X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { PanelItem, PanelView } from "../../../shared/panel";
+import type { PanelItem, PanelQueuedMessage, PanelView } from "../../../shared/panel";
+import { formatAttachmentSize } from "../../../shared/attachments";
 import { Markdown } from "../markdown";
-import type { PendingRequests } from "./model";
+import { forceStopNotice, queuedRunEditBlockedReason, type PendingRequests, type RunStop } from "./model";
 import { ApprovalCard, QuestionCard } from "./Requests";
+import { useCommandOutput } from "./useCommandOutput";
+import { useElapsed } from "./useElapsed";
 
 // One line per turn item, expanded on click. Every row keeps T3's own labels and muted tone, so the
 // timeline reads like the one in T3.
@@ -40,31 +49,221 @@ const IN_PROGRESS_STATUSES = new Set(["pending", "running", "waiting"]);
 interface TimelineProps {
   view: PanelView;
   pending: PendingRequests;
+  /** The Stop T3 would show under the timeline, or null when none is outstanding. */
+  stop: RunStop | null;
+  /** Bumped on each reconnect: a running row's live output stream belongs to one socket. */
+  connection: number;
+  /** What T3 said about the last force stop, if anything. */
+  forceStopNotice: string | null;
+  /** The queued message whose text is in the composer, if any. */
+  editingRunId: string | null;
+  onForceStopResult(notice: string): void;
+  onEditQueued(message: PanelQueuedMessage): void;
+  onCancelEditQueued(): void;
+  /** Resolves to an error to show, or null when the queued message was cancelled. */
+  onCancelQueued(message: PanelQueuedMessage): Promise<string | null>;
   onLink: LinkHandler;
 }
 
-export function Timeline({ view, pending, onLink }: TimelineProps) {
+export function Timeline(props: TimelineProps) {
+  const { view, pending, stop, editingRunId, onLink } = props;
+  const editBlocked = queuedRunEditBlockedReason(pending);
+
   return (
     <div className="flex min-w-0 flex-col gap-2">
       {view.rows.map((row) => (
-        <TimelineRow key={row.sourceItemId} item={row.item} pending={pending} onLink={onLink} />
+        <TimelineRow
+          key={row.sourceItemId}
+          item={row.item}
+          pending={pending}
+          connection={props.connection}
+          commandOutputStreaming={view.commandOutputStreaming}
+          onLink={onLink}
+        />
       ))}
       {view.queued.map((message) => (
-        <div key={message.id} className="flex min-w-0 flex-col items-end gap-1">
-          <span className="me-1 text-[11px] text-t3-muted">Queued</span>
-          <div
-            className="max-w-[80%] min-w-0 rounded-2xl p-3 text-[length:var(--t3-font-size-prompt)] text-[var(--t3-foreground)]"
-            style={{ backgroundColor: "color-mix(in srgb, var(--t3-message-surface) var(--t3-bubble-opacity), transparent)" }}
-          >
-            <Markdown text={message.text} onLink={onLink} />
-          </div>
-        </div>
+        <QueuedMessageRow
+          key={message.id}
+          message={message}
+          editing={editingRunId === message.runId}
+          editBlocked={editBlocked}
+          onEdit={props.onEditQueued}
+          onCancelEdit={props.onCancelEditQueued}
+          onCancel={props.onCancelQueued}
+          onLink={onLink}
+        />
       ))}
+      {stop !== null && (
+        <RunStopCard stop={stop} forceStop={view.threadForceStop} onResult={props.onForceStopResult} />
+      )}
+      {props.forceStopNotice !== null && (
+        <p role="status" className="py-0.5 text-center text-[11px] text-t3-muted">
+          {props.forceStopNotice}
+        </p>
+      )}
     </div>
   );
 }
 
-function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { item: PanelItem }) {
+/**
+ * A message waiting behind the active run. T3 draws it dashed and unfilled, with its edit and remove
+ * controls under it (apps/web/src/components/chat/QueuedRunsControl.tsx).
+ */
+function QueuedMessageRow({
+  message,
+  editing,
+  editBlocked,
+  onEdit,
+  onCancelEdit,
+  onCancel,
+  onLink,
+}: {
+  message: PanelQueuedMessage;
+  editing: boolean;
+  /** Set while an open question holds the composer, as T3 blocks the same edit. */
+  editBlocked: string | null;
+  onEdit: (message: PanelQueuedMessage) => void;
+  onCancelEdit: () => void;
+  onCancel: (message: PanelQueuedMessage) => Promise<string | null>;
+  onLink: LinkHandler;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function remove() {
+    setBusy(true);
+    setError(null);
+    const failure = await onCancel(message);
+    setBusy(false);
+    setError(failure);
+  }
+
+  return (
+    <div className="group/queued flex min-w-0 flex-col items-end gap-1">
+      <div className="max-w-[80%] min-w-0 rounded-2xl border border-dashed border-[color-mix(in_srgb,var(--t3-muted-foreground)_40%,transparent)] px-3 py-2 text-[length:var(--t3-font-size-prompt)] text-t3-muted">
+        <Markdown text={message.text} onLink={onLink} />
+      </div>
+      <div className="flex min-h-5 items-center gap-1.5 pe-1 text-[11px] text-t3-muted">
+        <span>Queued</span>
+        {editing ? (
+          <>
+            <span className="text-t3-fg">Editing in the composer</span>
+            <button
+              type="button"
+              title="Cancel editing queued message"
+              aria-label="Cancel editing queued message"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onCancelEdit}
+              className="rounded px-1 text-[11px] text-t3-fg transition-colors hover:bg-t3-accent"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <span className="flex items-center gap-1 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/queued:opacity-100">
+            <button
+              type="button"
+              title={editBlocked ?? "Edit queued message"}
+              aria-label={editBlocked ?? "Edit queued message"}
+              disabled={busy || editBlocked !== null}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onEdit(message)}
+              className="flex size-5 shrink-0 items-center justify-center rounded text-t3-muted transition-colors hover:text-t3-fg disabled:opacity-40"
+            >
+              <Pencil size={11} />
+            </button>
+            <button
+              type="button"
+              title="Remove queued message"
+              aria-label="Remove queued message"
+              disabled={busy}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => void remove()}
+              className="flex size-5 shrink-0 items-center justify-center rounded text-t3-muted transition-colors hover:text-t3-fg disabled:opacity-40"
+            >
+              {busy ? <LoaderCircle size={11} className="animate-spin" /> : <X size={11} />}
+            </button>
+          </span>
+        )}
+      </div>
+      {error !== null && <p className="pe-1 text-[11px] text-[var(--t3-error-foreground)]">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * A Stop the provider has not finished, ported from T3 (apps/web/src/components/chat/ThreadActivityBanners.tsx,
+ * runStopNowItem): Force stop appears only once T3 says the provider went unresponsive, and only on a
+ * server that advertises it.
+ */
+function RunStopCard({ stop, forceStop, onResult }: { stop: RunStop; forceStop: boolean; onResult: (notice: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const elapsed = useElapsed(stop.requestedAt);
+  const unresponsive = stop.state === "unresponsive";
+
+  async function force() {
+    setBusy(true);
+    setError(null);
+
+    const reply = await window.overlay.panel({ type: "forceStop", runId: stop.runId });
+
+    setBusy(false);
+
+    if (!reply.ok) {
+      setError(reply.error);
+
+      return;
+    }
+
+    if ("outcome" in reply) onResult(forceStopNotice(reply.outcome, reply.sharedWithThreadIds));
+  }
+
+  return (
+    <div className="rounded-xl border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[var(--t3-popover)] p-3">
+      <p className="flex items-center gap-1.5 text-[12px] font-medium text-t3-fg">
+        {unresponsive ? (
+          <TriangleAlert size={13} className="text-[var(--t3-warning-foreground)]" />
+        ) : (
+          <CircleStop size={13} className="text-t3-muted" />
+        )}
+        {unresponsive ? "Agent not responding to Stop" : "Stopping"}
+      </p>
+      {unresponsive && <p className="mt-1 text-[11px] text-t3-muted">It may be short on memory. Force stop kills its processes.</p>}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-t3-muted">
+        {elapsed !== null && <span className="tabular-nums">{elapsed}</span>}
+        {unresponsive && forceStop && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void force()}
+            className="flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] px-2.5 py-1 text-[12px] text-t3-fg hover:bg-t3-accent disabled:cursor-default disabled:opacity-40"
+          >
+            {busy && <LoaderCircle size={11} className="animate-spin" />}
+            {busy ? "Force stopping..." : "Force stop"}
+          </button>
+        )}
+      </div>
+      {error !== null && <p className="mt-1 text-[11px] text-[var(--t3-error-foreground)]">{error}</p>}
+    </div>
+  );
+}
+
+function TimelineRow({
+  item,
+  pending,
+  connection,
+  commandOutputStreaming,
+  onLink,
+}: {
+  item: PanelItem;
+  pending: PendingRequests;
+  /** The panel's connection epoch; a reconnect reopens a running row's output stream. */
+  connection: number;
+  /** T3 streams a running command's output; false keeps the per-row fetch. */
+  commandOutputStreaming: boolean;
+  onLink: LinkHandler;
+}) {
   switch (item.type) {
     case "user_message":
       return <UserMessageRow item={item} onLink={onLink} />;
@@ -73,7 +272,7 @@ function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { 
     case "reasoning":
       return <ReasoningRow item={item} />;
     case "command_execution":
-      return <CommandRow item={item} />;
+      return <CommandRow item={item} streaming={commandOutputStreaming} connection={connection} />;
     case "dynamic_tool":
       return <ToolRow item={item} />;
     case "file_change":
@@ -94,6 +293,8 @@ function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { 
     case "subagent":
       return <SubagentRow item={item} />;
     case "run_interrupt_request":
+      // T3 draws no row for the request: the Stop banner under the timeline owns it.
+      return null;
     case "run_interrupt_result":
       return <NoticeRow item={item} />;
     case "approval_request": {
@@ -120,9 +321,29 @@ function TimelineRow({ item, pending, onLink }: Omit<TimelineProps, "view"> & { 
 function UserMessageRow({ item, onLink }: { item: PanelItem; onLink: LinkHandler }) {
   const text = item.text ?? "";
   const queued = item.inputIntent === "queued_turn" && item.status !== "completed";
+  const attachments = item.attachments ?? [];
 
   return (
     <div className="group/msg flex min-w-0 flex-col items-end gap-1">
+      {attachments.length > 0 && (
+        <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {attachments.map((attachment) => (
+            <span
+              key={attachment.id}
+              title={attachment.name}
+              className="flex max-w-full min-w-0 items-center gap-1 rounded-lg border border-[color-mix(in_srgb,var(--t3-border)_100%,transparent)] bg-[color-mix(in_srgb,var(--t3-message-surface)_var(--t3-bubble-opacity),transparent)] px-2 py-1 text-[11px] text-t3-fg"
+            >
+              {attachment.type === "image" ? (
+                <ImageIcon size={12} className="shrink-0 text-t3-muted" />
+              ) : (
+                <FileText size={12} className="shrink-0 text-t3-muted" />
+              )}
+              <span className="min-w-0 truncate">{attachment.name}</span>
+              <span className="shrink-0 text-t3-muted">{formatAttachmentSize(attachment.sizeBytes)}</span>
+            </span>
+          ))}
+        </div>
+      )}
       <div
         className="max-w-[80%] min-w-0 rounded-2xl p-3 text-[length:var(--t3-font-size-prompt)] text-[var(--t3-foreground)]"
         style={{ backgroundColor: "color-mix(in srgb, var(--t3-message-surface) var(--t3-bubble-opacity), transparent)" }}
@@ -310,13 +531,14 @@ function useFullItem(item: PanelItem, open: boolean) {
   return { full, error };
 }
 
-function CommandRow({ item }: { item: PanelItem }) {
+function CommandRow({ item, streaming, connection }: { item: PanelItem; streaming: boolean; connection: number }) {
   const [open, setOpen] = useState(false);
-  const { full, error } = useFullItem(item, open);
-  const input = firstLine(item.input ?? "");
-  const output = (full ?? item).output ?? null;
-  const exitCode = item.exitCode ?? null;
   const running = IN_PROGRESS_STATUSES.has(item.status ?? "");
+  const live = useCommandOutput(item, open, streaming, running, connection);
+  const input = firstLine(item.input ?? "");
+  const output = live.output;
+  const shown = output !== null && output !== "";
+  const exitCode = item.exitCode ?? null;
   const failed = item.status === "failed";
 
   const badge = running ? (
@@ -346,12 +568,15 @@ function CommandRow({ item }: { item: PanelItem }) {
       {open && (
         <div className="mt-1 flex min-w-0 flex-col gap-1.5">
           <CodeBlock text={`$ ${item.input ?? ""}`} />
-          {error !== null ? (
-            <p className="text-[11px] text-t3-muted">Could not load the output: {error}</p>
-          ) : output === null ? (
-            <p className="text-[11px] text-t3-muted">No output</p>
+          {live.error !== null ? (
+            <p className="text-[11px] text-t3-muted">Could not load the output: {live.error}</p>
+          ) : !shown ? (
+            running ? null : <p className="text-[11px] text-t3-muted">No output</p>
           ) : (
-            <CodeBlock text={output} />
+            <>
+              {live.truncated && <p className="text-[11px] text-t3-muted">Earlier output not shown</p>}
+              <CodeBlock text={output} />
+            </>
           )}
         </div>
       )}
