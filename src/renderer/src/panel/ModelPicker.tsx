@@ -14,14 +14,16 @@ interface ModelPickerProps {
   catalog: ModelCatalog;
   /** The thread's model, from its projection. */
   current: PanelModelSelection;
+  /** The list's open state, which the composer also moves from its `/model` command. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   /** The draft composer picks the model its new thread starts on; an open thread switches through main. */
   onPick?: (selection: PanelModelSelection) => void;
 }
 
-export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
-  const [open, setOpen] = useState(false);
+export function ModelPicker({ catalog, current, open, onOpenChange, onPick }: ModelPickerProps) {
   const [saving, setSaving] = useState<string | null>(null);
-  const anchor = usePopoverDismiss(open, () => setOpen(false));
+  const anchor = usePopoverDismiss(open, () => onOpenChange(false));
   const groups = withCurrent(catalog.providers, current);
   const named = findModel(catalog.providers, current);
   const providerLabel = named?.provider.displayName ?? null;
@@ -32,7 +34,7 @@ export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
     if (saving !== null) return;
 
     if (current.instanceId === instanceId && current.model === model) {
-      setOpen(false);
+      onOpenChange(false);
 
       return;
     }
@@ -40,7 +42,7 @@ export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
     // A draft has no thread to switch yet: it carries the pick into the thread it creates.
     if (onPick !== undefined) {
       onPick({ instanceId, model });
-      setOpen(false);
+      onOpenChange(false);
 
       return;
     }
@@ -58,7 +60,7 @@ export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
       return;
     }
 
-    setOpen(false);
+    onOpenChange(false);
   }
 
   return (
@@ -71,7 +73,7 @@ export function ModelPicker({ catalog, current, onPick }: ModelPickerProps) {
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => {
           catalog.reportError(null);
-          setOpen((value) => !value);
+          onOpenChange(!open);
         }}
         className="flex h-7 min-w-0 items-center gap-1 rounded-full px-2 text-[11px] transition-colors hover:bg-t3-accent"
       >

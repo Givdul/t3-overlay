@@ -69,6 +69,29 @@ export interface PanelModel {
   options: PanelModelOptionDescriptor[];
 }
 
+/**
+ * One command a provider expands itself, e.g. Claude's `/compact`
+ * (packages/contracts/src/server.ts, ServerProviderSlashCommand).
+ */
+export interface PanelProviderCommand {
+  name: string;
+  description?: string;
+  /** The command's argument hint, shown when it has no description (server.ts, input.hint). */
+  hint?: string;
+}
+
+/** One skill a provider offers, which its composer invokes as `$name` (server.ts, ServerProviderSkill). */
+export interface PanelProviderSkill {
+  name: string;
+  /** T3's label for it, e.g. its title case; the name when the provider sends none. */
+  displayName?: string;
+  description?: string;
+  /** T3's one-line form, which its menus show before the long description. */
+  shortDescription?: string;
+  /** Where the skill came from: "user", "repo", "project" and so on. */
+  scope?: string;
+}
+
 /** A provider whose models a thread can switch to (packages/contracts/src/server.ts, ServerProvider). */
 export interface PanelModelProvider {
   instanceId: string;
@@ -78,6 +101,20 @@ export interface PanelModelProvider {
   /** The permission modes this provider supports; empty means every one of T3's. */
   supportedRuntimeModes: string[];
   models: PanelModel[];
+  /** The provider's own commands, without the ones a skill of the same name stands in for. */
+  commands: PanelProviderCommand[];
+  /** The skills its composer offers, as `/skill:name` (server.ts, getProviderSkillsForSlashMenu). */
+  skills: PanelProviderSkill[];
+}
+
+/**
+ * One file or folder the `@` menu offers (packages/contracts/src/project.ts, ProjectEntry). Paths are
+ * relative to the project root, as T3's own composer inserts them.
+ */
+export interface PanelProjectEntry {
+  path: string;
+  /** "file" or "directory". */
+  kind: string;
 }
 
 export interface PanelThread {
@@ -343,6 +380,11 @@ export interface PanelView {
    * machine's thread cannot take a new model selection from here, so its traits menu is hidden.
    */
   modelTraits: boolean;
+  /**
+   * Whether the composer draws T3's `/` command and `@` file menus from this PC's server. Another machine's
+   * thread is read through `/mcp`, which offers neither, so its composer hides both.
+   */
+  composerMenus: boolean;
 }
 
 /** The fields of a domain event the panel folds in; everything else stays in main. */
@@ -423,8 +465,16 @@ export type PanelThreadCommand =
   | { type: "respond"; requestId: string; decision: PanelApprovalDecision }
   | { type: "answer"; requestId: string; answers: Record<string, string | string[]> }
   | { type: "turnItem"; itemId: string }
-  /** The models the server offers, grouped by provider, for the composer's picker. */
-  | { type: "models" }
+  /**
+   * The models, commands and skills the server offers, grouped by provider. `projectId` adds the skills
+   * T3's own scan found in that project's checkout.
+   */
+  | { type: "models"; projectId?: string }
+  /**
+   * Searches the project's files for the composer's `@` menu (packages/contracts/src/project.ts,
+   * ProjectSearchEntriesInput; apps/web/src/state/queries.ts, useComposerPathSearch).
+   */
+  | { type: "entries"; projectId: string; query: string }
   /**
    * Switches the open thread's model, so its next turn runs on it. `options` are the model's own
    * option values, which a traits pick writes; a plain model switch leaves them to the model.
@@ -470,6 +520,9 @@ export interface PanelManagedPolicy {
 }
 
 export type PanelModelsReply = { ok: true; providers: PanelModelProvider[]; policy: PanelManagedPolicy | null } | PanelFailure;
+
+/** The project's matching files and folders, in T3's own order, bounded as its composer bounds them. */
+export type PanelEntriesReply = { ok: true; entries: PanelProjectEntry[] } | PanelFailure;
 
 /** T3's transcript of a recording; `text` is empty when it heard no speech. */
 export type PanelVoiceReply = { ok: true; text: string } | PanelFailure;

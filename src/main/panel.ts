@@ -7,7 +7,9 @@ import type {
   PanelAttachmentUploads,
   PanelAttempt,
   PanelCommandOutput,
+  PanelEntriesReply,
   PanelEventPayload,
+  PanelFailure,
   PanelFileChange,
   PanelForceStopReply,
   PanelItem,
@@ -25,6 +27,9 @@ import type {
   PanelModelSelection,
   PanelModelsReply,
   PanelModelToggleOption,
+  PanelProjectEntry,
+  PanelProviderCommand,
+  PanelProviderSkill,
   PanelQuestion,
   PanelQueuedMessage,
   PanelReply,
@@ -290,6 +295,32 @@ interface WireProviderModel {
   capabilities?: { optionDescriptors?: WireOptionDescriptor[] } | null;
 }
 
+/** One command a provider expands itself (packages/contracts/src/server.ts, ServerProviderSlashCommand). */
+interface WireSlashCommand {
+  name?: string;
+  description?: string;
+  input?: { hint?: string };
+}
+
+/** One skill a provider offers (packages/contracts/src/server.ts, ServerProviderSkill). */
+interface WireSkill {
+  name?: string;
+  description?: string;
+  shortDescription?: string;
+  displayName?: string;
+  scope?: string;
+  enabled?: boolean;
+  /** T3's `user-invocable: false`: only the agent can start it, so its composer hides it. */
+  userInvocable?: boolean;
+}
+
+/** A provider's scan of one checkout (server.ts, ServerProviderWorkspaceSnapshot). */
+interface WireWorkspaceSnapshot {
+  cwd?: string;
+  slashCommands?: WireSlashCommand[];
+  skills?: WireSkill[];
+}
+
 /** A provider and its models (packages/contracts/src/server.ts, ServerProvider). */
 interface WireProvider {
   instanceId?: string;
@@ -305,6 +336,21 @@ interface WireProvider {
   /** The permission modes the provider supports; absent means every one. */
   supportedRuntimeModes?: string[];
   models?: WireProviderModel[];
+  /** The commands and skills its composer offers, and those it found in each checkout. */
+  slashCommands?: WireSlashCommand[];
+  skills?: WireSkill[];
+  workspaceSnapshots?: WireWorkspaceSnapshot[];
+}
+
+/** One file or folder `projects.searchEntries` answers with (packages/contracts/src/project.ts, ProjectEntry). */
+interface WireProjectEntry {
+  path?: string;
+  kind?: string;
+}
+
+/** `projects.searchEntries`'s answer (project.ts, ProjectSearchEntriesResult). */
+interface WireSearchReply {
+  entries?: WireProjectEntry[];
 }
 
 /** The administrator's policy, which caps the permission modes a thread may run (packages/contracts/src/managedPolicy.ts, ManagedPolicySummary). */
@@ -335,14 +381,22 @@ interface WireForceStopResult {
   sharedWithThreadIds?: string[];
 }
 
-/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, the provider catalog and a force stop. */
-type WireReply = WireProjection | WireTurnItemReply | WireUploadReply | WireServerConfig | WireForceStopResult;
+/** The reply shapes this connection asks for: a projection, a turn item, an upload slot, the provider catalog, a file search and a force stop. */
+type WireReply =
+  | WireProjection
+  | WireTurnItemReply
+  | WireUploadReply
+  | WireServerConfig
+  | WireForceStopResult
+  | WireSearchReply;
 
 export interface PanelOptions {
   server: T3Server;
   token: string;
   /** This PC's environment id; a thread from anywhere else is main/remote.ts's to read. */
   environmentId: string;
+  /** The checkout a project runs in, which its composer's `@` menu searches; null when T3 lists none. */
+  projectRoot: (projectId: string) => string | null;
   onMessage: (message: PanelMessage) => void;
   onAuthExpired: () => void;
 }
@@ -350,12 +404,25 @@ export interface PanelOptions {
 export interface Panel {
   /** Starts or stops the subscription. The same target twice keeps the live one. */
   setTarget(target: ThreadRef | null): void;
-  command(command: PanelThreadCommand): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply>;
+  command(
+    command: PanelThreadCommand,
+  ): Promise<
+    | PanelReply
+    | PanelItemReply
+    | PanelAttachmentReply
+    | PanelModelsReply
+    | PanelEntriesReply
+    | PanelVoiceReply
+    | PanelForceStopReply
+  >;
   stop(): void;
 }
 
 /** Long tool output is fetched per row instead; an event stream must not carry megabytes. */
 const OUTPUT_LIMIT = 8000;
+
+/** How many files and folders the composer's `@` menu asks T3 for (apps/web/src/state/queries.ts, COMPOSER_PATH_SEARCH_LIMIT). */
+const COMPOSER_SEARCH_LIMIT = 80;
 
 /** An event this build cannot fold in re-reads the projection once the burst settles. */
 const STALE_DELAY_MS = 500;
@@ -607,7 +674,7 @@ export function startPanel(options: PanelOptions): Panel {
     }, STALE_DELAY_MS);
   }
 
-  function refuse(reason: string): PanelReply {
+  function refuse(reason: string): PanelFailure {
     return { ok: false, error: reason };
   }
 
@@ -634,18 +701,50 @@ export function startPanel(options: PanelOptions): Panel {
   }
 
   /**
-   * `server.getConfig` read once: the providers a thread can switch to, the options each model declares,
-   * and the policy that caps its threads' permission modes.
+   * `server.getConfig` read once: the providers a thread can switch to, the commands and skills each
+   * offers, the options each model declares, and the policy that caps its threads' permission modes.
    */
-  async function readCatalog(): Promise<PanelModelsReply> {
+  async function readCatalog(projectId: string | undefined): Promise<PanelModelsReply> {
+    const cwd = projectId === undefined ? null : options.projectRoot(projectId);
     const config = await withRpc((connection) => connection.request<WireServerConfig>("server.getConfig", {}));
 
-    return { ok: true, providers: trimModels(config), policy: trimPolicy(config) };
+    return { ok: true, providers: trimModels(config, cwd), policy: trimPolicy(config) };
+  }
+
+  /** The project's matching files and folders, for the composer's `@` menu. */
+  async function readEntries(projectId: string, query: string): Promise<PanelEntriesReply> {
+    const cwd = options.projectRoot(projectId);
+
+    if (cwd === null) return refuse("T3 does not list this thread's project here");
+
+    // T3's own search bounds: its composer asks for these and cuts a lone surrogate off the query
+    // (apps/web/src/state/queries.ts, useProjectPathSearch).
+    const reply = await withRpc((connection) =>
+      connection.request<WireSearchReply>("projects.searchEntries", {
+        cwd,
+        query: query.slice(0, 256).replace(/[\uD800-\uDBFF]$/, ""),
+        limit: COMPOSER_SEARCH_LIMIT,
+      }),
+    );
+
+    const entries: PanelProjectEntry[] = (reply.entries ?? []).flatMap((entry) =>
+      entry.path === undefined || entry.path === "" ? [] : [{ path: entry.path, kind: entry.kind ?? "file" }],
+    );
+
+    return { ok: true, entries };
   }
 
   async function command(
     next: PanelThreadCommand,
-  ): Promise<PanelReply | PanelItemReply | PanelAttachmentReply | PanelModelsReply | PanelVoiceReply | PanelForceStopReply> {
+  ): Promise<
+    | PanelReply
+    | PanelItemReply
+    | PanelAttachmentReply
+    | PanelModelsReply
+    | PanelEntriesReply
+    | PanelVoiceReply
+    | PanelForceStopReply
+  > {
     try {
       // The draft composer's commands: the server answers them before any thread exists.
       switch (next.type) {
@@ -658,7 +757,9 @@ export function startPanel(options: PanelOptions): Panel {
 
           return await transcribePcm(options.server, options.token, next.pcm);
         case "models":
-          return await readCatalog();
+          return await readCatalog(next.projectId);
+        case "entries":
+          return await readEntries(next.projectId, next.query);
         case "attach": {
           const capability = options.server.attachmentUploads;
 
@@ -1213,6 +1314,8 @@ export function trimView(
     commandOutputStreaming,
     // This thread is on this PC's server, whose socket takes a model selection from the panel.
     modelTraits: true,
+    // Its composer asks this socket for the provider's commands and the project's files, as T3's does.
+    composerMenus: true,
   };
 }
 
@@ -1368,11 +1471,12 @@ function trimOptionChoices(raw: WireOptionChoice[] | undefined): PanelModelOptio
 }
 
 /**
- * The providers a thread can switch to and their models. T3's picker offers a provider only while it is
- * on and ready, and hides the models the user hid (apps/web/src/providerInstances.ts,
- * apps/web/src/modelSelection.ts); custom models stay selectable, as they do there.
+ * The providers a thread can switch to, their models, and the commands and skills their composer offers.
+ * T3's picker offers a provider only while it is on and ready, and hides the models the user hid
+ * (apps/web/src/providerInstances.ts, apps/web/src/modelSelection.ts); custom models stay selectable, as
+ * they do there. A checkout's own scan adds its skills, so `cwd` picks the snapshot T3's composer reads.
  */
-export function trimModels(config: WireServerConfig | undefined): PanelModelProvider[] {
+export function trimModels(config: WireServerConfig | undefined, cwd: string | null = null): PanelModelProvider[] {
   const preferences = config?.settings?.providerModelPreferences ?? {};
 
   return (config?.providers ?? []).flatMap((provider) => {
@@ -1411,6 +1515,11 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
     // A provider with nothing left to pick is no group in the list.
     if (models.length === 0) return [];
 
+    // T3's composer resolves a provider's commands and skills for the thread's checkout, and falls back
+    // to the machine-wide lists (packages/client-runtime/src/providerSkills.ts, resolveProviderSkillsForCwd).
+    const snapshot = (provider.workspaceSnapshots ?? []).find((candidate) => cwd !== null && candidate.cwd !== undefined && sameProjectRoot(candidate.cwd, cwd));
+    const skills = trimProviderSkills(snapshot?.skills ?? provider.skills);
+
     return [
       {
         instanceId,
@@ -1419,9 +1528,74 @@ export function trimModels(config: WireServerConfig | undefined): PanelModelProv
         showInteractionModeToggle: provider.showInteractionModeToggle !== false,
         supportedRuntimeModes: (provider.supportedRuntimeModes ?? []).filter(Boolean),
         models,
+        commands: trimProviderCommands(snapshot?.slashCommands ?? provider.slashCommands, skills),
+        skills,
       },
     ];
   });
+}
+
+/**
+ * The skills T3's slash menu lists: the user-invocable ones, one per name
+ * (packages/client-runtime/src/providerSkills.ts, getProviderSkillsForSlashMenu).
+ */
+function trimProviderSkills(raw: WireSkill[] | undefined): PanelProviderSkill[] {
+  const seen = new Set<string>();
+  const skills: PanelProviderSkill[] = [];
+
+  for (const skill of raw ?? []) {
+    const name = skill.name?.trim() ?? "";
+
+    if (name === "" || skill.enabled === false || skill.userInvocable === false) continue;
+
+    const key = name.toLowerCase();
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const trimmed: PanelProviderSkill = { name };
+
+    if (skill.displayName !== undefined && skill.displayName.trim() !== "") trimmed.displayName = skill.displayName;
+
+    if (skill.description !== undefined) trimmed.description = skill.description;
+
+    if (skill.shortDescription !== undefined) trimmed.shortDescription = skill.shortDescription;
+
+    if (skill.scope !== undefined && skill.scope.trim() !== "") trimmed.scope = skill.scope;
+
+    skills.push(trimmed);
+  }
+
+  return skills;
+}
+
+/** A provider's commands, one per name, without the ones a listed skill of that name stands in for. */
+function trimProviderCommands(raw: WireSlashCommand[] | undefined, skills: PanelProviderSkill[]): PanelProviderCommand[] {
+  const skillNames = new Set(skills.map((skill) => skill.name.toLowerCase()));
+  const seen = new Set<string>();
+
+  return (raw ?? []).flatMap((command) => {
+    const name = command.name?.trim() ?? "";
+    const key = name.toLowerCase();
+
+    if (name === "" || skillNames.has(key) || seen.has(key)) return [];
+    seen.add(key);
+
+    const trimmed: PanelProviderCommand = { name };
+
+    if (command.description !== undefined) trimmed.description = command.description;
+
+    if (command.input?.hint !== undefined) trimmed.hint = command.input.hint;
+
+    return [trimmed];
+  });
+}
+
+/** T3's scratch root and a project's checkout name one folder; only the spelling can differ. */
+function sameProjectRoot(left: string, right: string): boolean {
+  const trim = (path: string) => path.replace(/[\\/]+$/, "");
+
+  return process.platform === "win32" ? trim(left).toLowerCase() === trim(right).toLowerCase() : trim(left) === trim(right);
 }
 
 /** The administrator's cap on permission modes, or null on an unmanaged server. */

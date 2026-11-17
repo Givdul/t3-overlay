@@ -715,12 +715,14 @@ function viewOf(current: OpenThread): PanelView {
     queued: [],
     // Another machine's thread is read-only here: T3 alone keeps its queue, uploads, dictation, live
     // command output and force stop, so the composer draws none of those controls. Its permission mode,
-    // plan mode and model options are the same: this machine's server takes no such setting for it.
+    // plan mode and model options are the same: this machine's server takes no such setting for it. Its
+    // `/` and `@` menus are too: neither `/mcp` nor this socket searches that machine's files.
     threadForceStop: false,
     attachmentUploads: null,
     voiceTranscription: false,
     commandOutputStreaming: false,
     modelTraits: false,
+    composerMenus: false,
   };
 }
 

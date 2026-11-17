@@ -338,6 +338,8 @@ function startFeed(server: T3Server, token: string) {
     server,
     token,
     environmentId: server.environmentId,
+    // The composer's `@` menu searches a project's own checkout, which the shell lists by project id.
+    projectRoot: (projectId) => projects.find((project) => project.projectId === projectId)?.workspaceRoot ?? null,
     onMessage: sendPanelMessage,
     onAuthExpired: () => refreshSession(server),
   });

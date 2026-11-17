@@ -346,6 +346,8 @@ export function Panel({ state, style }: { state: OverlayState; style: CSSPropert
           modelTraits={draftOpen ? true : (view?.modelTraits ?? false)}
           runtimeMode={draftOpen ? draft.runtimeMode : (view?.thread.runtimeMode ?? null)}
           interactionMode={draftOpen ? draft.interactionMode : (view?.thread.interactionMode ?? null)}
+          projectId={draftOpen ? (draft.project?.projectId ?? null) : (view?.thread.projectId ?? null)}
+          composerMenus={draftOpen ? true : (view?.composerMenus ?? false)}
           onPickModel={draftOpen ? draft.selectModel : undefined}
           onPickModelOptions={draftOpen ? draft.selectModelOptions : undefined}
           onPickRuntimeMode={draftOpen ? draft.selectRuntimeMode : undefined}

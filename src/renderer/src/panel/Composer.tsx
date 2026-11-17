@@ -12,10 +12,13 @@ import type {
   PanelRun,
 } from "../../../shared/panel";
 import { findModel } from "./modelTraits";
+import { ComposerMenu } from "./ComposerMenu";
+import { applyComposerSuggestion, clearComposerTrigger } from "./composerTrigger";
 import { ModelPicker } from "./ModelPicker";
 import { RuntimeModePicker } from "./RuntimeModePicker";
 import { TraitsPicker } from "./TraitsPicker";
 import { useComposerAttachments } from "./useComposerAttachments";
+import { useComposerMenu, type ComposerMenuItem } from "./useComposerMenu";
 import { useModelCatalog } from "./useModelCatalog";
 import { usePendingCaret } from "./usePendingCaret";
 import { useVoiceInput, type VoicePhase } from "./useVoiceInput";
@@ -24,7 +27,7 @@ import { useVoiceInput, type VoicePhase } from "./useVoiceInput";
 // queues behind the active run instead of starting one; T3 draws the queued message until it starts.
 // The new-thread draft draws the same card, and its send starts the thread instead of joining one.
 // Its footer holds T3's composer settings: the model, the model's options, plan mode and the thread's
-// permission mode.
+// permission mode. Typing `/` or `@` opens T3's own command and file menus above the box.
 
 export interface ComposerHandle {
   focus(): void;
@@ -55,6 +58,10 @@ interface ComposerProps {
   runtimeMode: string | null;
   /** "default" or "plan"; null hides the plan toggle. */
   interactionMode: string | null;
+  /** The project whose files `@` searches, and whose own skills the provider scan adds; null hides the file menu. */
+  projectId: string | null;
+  /** Whether `/` and `@` open T3's menus; another machine's thread offers neither. */
+  composerMenus: boolean;
   /** The draft picks the model its new thread starts on; an open thread switches through main. */
   onPickModel?: (selection: PanelModelSelection) => void;
   /** The draft keeps the model's options for the thread it creates; an open thread writes through main. */
@@ -82,9 +89,11 @@ interface ComposerProps {
 
 export function Composer(props: ComposerProps) {
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<{ error: string; grant: boolean } | null>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const wantFocus = useRef(false);
@@ -126,12 +135,21 @@ export function Composer(props: ComposerProps) {
   const attachable = props.attachmentUploads !== null;
   const uploading = attachments.some((attachment) => attachment.status !== "ready");
 
-  // The catalog is read once for the whole footer: the model list, the model's options and the provider's
-  // permission modes and plan toggle all come from it.
-  const catalog = useModelCatalog(props.threadKey);
+  // The catalog is read once for the whole footer: the model list, the model's options, the provider's
+  // permission modes, plan toggle, commands and skills all come from it.
+  const catalog = useModelCatalog(props.threadKey, props.projectId);
   const named = props.modelSelection === null ? null : findModel(catalog.providers, props.modelSelection);
   const planAllowed = props.interactionMode !== null && named?.provider.showInteractionModeToggle !== false;
   const planOn = props.interactionMode === "plan";
+
+  // T3's two autocomplete menus, read from the token at the caret.
+  const menu = useComposerMenu({
+    enabled: props.composerMenus,
+    text,
+    caret,
+    projectId: props.projectId,
+    provider: named?.provider ?? null,
+  });
 
   /** T3's plan toggle (apps/mobile/src/state/thread-outbox-model.ts, resolveProviderInteractionMode). */
   async function togglePlan() {
@@ -155,6 +173,33 @@ export function Composer(props: ComposerProps) {
     props.onTextChange(value);
   };
 
+  /** Applies a menu pick to the box: T3 inserts the text at the trigger and leaves the caret after it. */
+  function pickSuggestion(item: ComposerMenuItem) {
+    const trigger = menu.trigger;
+
+    if (trigger === null) return;
+
+    // T3's `/model` clears the trigger and opens the model list instead of sending a command.
+    if (item.opensModelPicker) {
+      const cleared = clearComposerTrigger(textRef.current, trigger);
+
+      setDraftText(cleared.text);
+      setCaret(cleared.caret);
+      placeCaret(cleared.caret);
+      setModelPickerOpen(true);
+
+      return;
+    }
+
+    if (item.insertion === null) return;
+
+    const next = applyComposerSuggestion(textRef.current, trigger, item.insertion);
+
+    setDraftText(next.text);
+    setCaret(next.caret);
+    placeCaret(next.caret);
+  }
+
   /** Puts a transcript where the caret was, with a space where words would otherwise run together. */
   function insertTranscript(transcript: string) {
     const element = textarea.current;
@@ -166,6 +211,7 @@ export function Composer(props: ComposerProps) {
     const insert = `${left !== "" && !/\s$/.test(left) ? " " : ""}${transcript}${right !== "" && !/^\s/.test(right) ? " " : ""}`;
 
     setDraftText(left + insert + right);
+    setCaret(start + insert.length);
     placeCaret(start + insert.length);
   }
 
@@ -180,6 +226,7 @@ export function Composer(props: ComposerProps) {
     edit(value) {
       wantFocus.current = true;
       setDraftText(value);
+      setCaret(value.length);
       placeCaret(value.length);
     },
   }));
@@ -272,7 +319,7 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div
-      className="-mt-4 flex shrink-0 flex-col rounded-2xl border border-[var(--t3-border)] bg-[color-mix(in_srgb,var(--t3-popover)_92%,transparent)] backdrop-blur-sm"
+      className="relative -mt-4 flex shrink-0 flex-col rounded-2xl border border-[var(--t3-border)] bg-[color-mix(in_srgb,var(--t3-popover)_92%,transparent)] backdrop-blur-sm"
       onFocus={() => props.onFocusChange(true)}
       onBlur={(event) => {
         const next = event.relatedTarget instanceof Node ? event.relatedTarget : null;
@@ -305,6 +352,8 @@ export function Composer(props: ComposerProps) {
           {props.statusLabel !== "" && <span>{props.statusLabel}</span>}
         </span>
       </div>
+
+      {menu.kind !== null && <ComposerMenu menu={menu} onPick={pickSuggestion} />}
 
       {attachments.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 px-4 pt-1 pb-0.5">
@@ -371,7 +420,15 @@ export function Composer(props: ComposerProps) {
         ref={textarea}
         rows={1}
         value={text}
-        onChange={(event) => setDraftText(event.target.value)}
+        onChange={(event) => {
+          const value = event.target.value;
+
+          setDraftText(value);
+          setCaret(event.target.selectionStart ?? value.length);
+        }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
+        onClick={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
+        onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? textRef.current.length)}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
 
@@ -385,6 +442,34 @@ export function Composer(props: ComposerProps) {
         onKeyDown={(event) => {
           // An IME's Enter confirms the candidate, not the message.
           if (event.nativeEvent.isComposing) return;
+
+          // An open menu takes the keys it needs: arrows move its highlight, Enter or Tab picks, and
+          // Escape closes it alone rather than the panel behind it.
+          if (menu.kind !== null) {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              menu.move(event.key === "ArrowDown" ? 1 : -1);
+
+              return;
+            }
+
+            if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) {
+              event.preventDefault();
+              const item = menu.chosen();
+
+              if (item !== null) pickSuggestion(item);
+
+              return;
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.dismiss();
+
+              return;
+            }
+          }
 
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
@@ -449,7 +534,13 @@ export function Composer(props: ComposerProps) {
           </>
         )}
         {props.modelSelection !== null && (
-          <ModelPicker catalog={catalog} current={props.modelSelection} onPick={props.onPickModel} />
+          <ModelPicker
+            catalog={catalog}
+            current={props.modelSelection}
+            open={modelPickerOpen}
+            onOpenChange={setModelPickerOpen}
+            onPick={props.onPickModel}
+          />
         )}
         {props.modelTraits && props.modelSelection !== null && (
           <TraitsPicker

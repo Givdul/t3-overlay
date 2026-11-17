@@ -31,6 +31,10 @@ export interface WirePayload {
   modelSelection?: { instanceId: string; model: string; options?: PanelModelOption[] };
   // `orchestration.launchThread`: the new-thread draft's project, title and first turn.
   projectId?: string;
+  // `projects.searchEntries`: the project root the composer's `@` menu searches, and its query.
+  cwd?: string;
+  query?: string;
+  limit?: number;
   title?: string;
   generateTitle?: boolean;
   runtimeMode?: string;

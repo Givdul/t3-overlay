@@ -3,6 +3,7 @@ import type {
   PanelCommand,
   PanelCreateReply,
   PanelDraftReply,
+  PanelEntriesReply,
   PanelForceStopReply,
   PanelItemReply,
   PanelMessage,
@@ -30,6 +31,7 @@ export interface OverlayApi {
     | PanelItemReply
     | PanelAttachmentReply
     | PanelModelsReply
+    | PanelEntriesReply
     | PanelVoiceReply
     | PanelDraftReply
     | PanelCreateReply
